@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertCircle,
   FileAudio,
   Loader2,
   Music2,
@@ -18,6 +19,17 @@ type UploadedScore = {
   kind: "image" | "pdf";
 };
 
+type AnalysisResult = {
+  key?: string;
+  tempo?: string;
+  chordProgression?: string[];
+  confidence?: {
+    key?: number;
+    tempo?: number;
+    chordProgression?: number;
+  };
+};
+
 const sampleBars = [
   "M7 9 13",
   "Dm7 G7alt",
@@ -33,14 +45,16 @@ export default function Home() {
   const [score, setScore] = useState<UploadedScore | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [style, setStyle] = useState("재즈 발라드, 따뜻한 코드 보이싱, 색소폰 애드립");
+  const [style, setStyle] = useState("Jazz ballad, warm voicings, saxophone adlib");
   const [hasGenerated, setHasGenerated] = useState(false);
+  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const fileMeta = useMemo(() => {
     if (!score) return null;
 
     const sizeInMb = score.file.size / 1024 / 1024;
-    return `${score.file.name} · ${sizeInMb.toFixed(sizeInMb > 1 ? 1 : 2)}MB`;
+    return `${score.file.name} - ${sizeInMb.toFixed(sizeInMb > 1 ? 1 : 2)}MB`;
   }, [score]);
 
   const handleFiles = (files: FileList | null) => {
@@ -50,7 +64,10 @@ export default function Home() {
     const isPdf = file.type === "application/pdf";
     const isImage = file.type.startsWith("image/");
 
-    if (!isPdf && !isImage) return;
+    if (!isPdf && !isImage) {
+      setError("Please upload an image or PDF score.");
+      return;
+    }
 
     setScore((current) => {
       if (current) URL.revokeObjectURL(current.url);
@@ -61,8 +78,8 @@ export default function Home() {
       };
     });
     setHasGenerated(false);
-    setIsAnalyzing(true);
-    window.setTimeout(() => setIsAnalyzing(false), 1600);
+    setAnalysis(null);
+    setError(null);
   };
 
   const handleDrop = (event: DragEvent<HTMLLabelElement>) => {
@@ -71,16 +88,45 @@ export default function Home() {
     handleFiles(event.dataTransfer.files);
   };
 
-  const generateAdlib = (event: FormEvent<HTMLFormElement>) => {
+  const generateAdlib = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!score || isAnalyzing) return;
 
+    if (score.kind !== "image") {
+      setError("Claude analysis currently supports image files. Please upload a score image.");
+      setAnalysis(null);
+      setHasGenerated(false);
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("score", score.file);
+    formData.append("style", style);
+
+    setError(null);
+    setAnalysis(null);
     setHasGenerated(false);
     setIsAnalyzing(true);
-    window.setTimeout(() => {
-      setIsAnalyzing(false);
+
+    try {
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        body: formData
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Score analysis failed.");
+      }
+
+      setAnalysis(data);
       setHasGenerated(true);
-    }, 1400);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Score analysis failed.");
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const removeScore = () => {
@@ -88,6 +134,8 @@ export default function Home() {
     setScore(null);
     setIsAnalyzing(false);
     setHasGenerated(false);
+    setAnalysis(null);
+    setError(null);
   };
 
   return (
@@ -103,13 +151,13 @@ export default function Home() {
                 Adlib Score Generator
               </h1>
               <p className="text-sm text-zinc-400">
-                악보를 올리고 원하는 무드의 애드립 라인을 생성하세요.
+                Upload a score image, analyze it with Claude, and shape a new adlib idea.
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2 rounded-full border border-line bg-black/30 px-3 py-2 text-sm text-zinc-300">
             <span className="h-2 w-2 rounded-full bg-moss shadow-[0_0_16px_rgba(30,215,96,0.8)]" />
-            Live session
+            Claude ready
           </div>
         </header>
 
@@ -136,15 +184,15 @@ export default function Home() {
               />
               <UploadCloud className="mb-5 h-14 w-14 text-moss" aria-hidden />
               <span className="text-2xl font-bold text-white sm:text-4xl">
-                악보 이미지 또는 PDF 업로드
+                Upload score image or PDF
               </span>
               <span className="mt-3 max-w-lg text-sm leading-6 text-zinc-400 sm:text-base">
-                파일을 드래그앤드롭하거나 클릭해서 선택하세요. 업로드 후 원본 악보와
-                애드립 결과를 나란히 확인할 수 있습니다.
+                Drag and drop a file here, or click to choose one. Image files can be sent
+                to Claude for key, tempo, and chord progression analysis.
               </span>
               <span className="mt-6 inline-flex items-center gap-2 rounded-full bg-moss px-5 py-3 text-sm font-bold text-ink">
                 <FileAudio className="h-4 w-4" aria-hidden />
-                Score 선택
+                Choose score
               </span>
             </label>
           </section>
@@ -152,35 +200,33 @@ export default function Home() {
           <>
             <section className="grid flex-1 grid-cols-1 gap-5 lg:grid-cols-2">
               <ScorePanel
-                title="원본 악보"
+                title="Original score"
                 meta={fileMeta}
                 action={removeScore}
-                actionLabel="업로드 제거"
+                actionLabel="Remove upload"
               >
                 {score.kind === "pdf" ? (
                   <iframe
-                    title="원본 PDF 악보"
+                    title="Original PDF score"
                     src={score.url}
                     className="h-full min-h-[420px] w-full rounded-md border-0 bg-zinc-950"
                   />
                 ) : (
                   <img
                     src={score.url}
-                    alt="업로드한 원본 악보"
+                    alt="Uploaded original score"
                     className="h-full min-h-[420px] w-full rounded-md object-contain"
                   />
                 )}
               </ScorePanel>
 
-              <ScorePanel title="애드립 결과 악보" meta={style}>
+              <ScorePanel title="Claude analysis" meta={style}>
                 {isAnalyzing ? (
-                  <div className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-md bg-graphite">
-                    <Loader2 className="h-12 w-12 animate-spin text-moss" aria-hidden />
-                    <p className="mt-4 text-lg font-semibold text-white">분석중...</p>
-                    <p className="mt-2 text-sm text-zinc-400">
-                      코드 진행과 멜로디 흐름을 읽고 있습니다.
-                    </p>
-                  </div>
+                  <LoadingAnalysis />
+                ) : error ? (
+                  <ErrorResult message={error} />
+                ) : analysis ? (
+                  <AnalysisResultView analysis={analysis} raw={analysis} />
                 ) : (
                   <AdlibPreview hasGenerated={hasGenerated} />
                 )}
@@ -198,7 +244,7 @@ export default function Home() {
                     value={style}
                     onChange={(event) => setStyle(event.target.value)}
                     className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-zinc-500 sm:text-base"
-                    placeholder="예: 펑키한 재즈, 빠른 비밥, R&B 보컬 애드립"
+                    placeholder="e.g. funky jazz, fast bebop, R&B vocal adlib"
                   />
                 </div>
                 <button
@@ -211,7 +257,7 @@ export default function Home() {
                   ) : (
                     <Play className="h-4 w-4 fill-current" aria-hidden />
                   )}
-                  생성
+                  Generate
                 </button>
               </div>
             </form>
@@ -263,13 +309,129 @@ function ScorePanel({
   );
 }
 
+function LoadingAnalysis() {
+  return (
+    <div className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-md bg-graphite">
+      <Loader2 className="h-12 w-12 animate-spin text-moss" aria-hidden />
+      <p className="mt-4 text-lg font-semibold text-white">Analyzing...</p>
+      <p className="mt-2 text-sm text-zinc-400">
+        Claude is reading the key, tempo, and chord movement.
+      </p>
+    </div>
+  );
+}
+
+function ErrorResult({ message }: { message: string }) {
+  return (
+    <div className="flex h-full min-h-[420px] flex-col items-center justify-center gap-3 rounded-md bg-graphite p-6 text-center">
+      <AlertCircle className="h-10 w-10 text-red-400" aria-hidden />
+      <p className="text-lg font-semibold text-white">Analysis failed</p>
+      <p className="max-w-md text-sm leading-6 text-zinc-400">{message}</p>
+    </div>
+  );
+}
+
+function AnalysisResultView({
+  analysis,
+  raw
+}: {
+  analysis: AnalysisResult;
+  raw: AnalysisResult;
+}) {
+  const chords = analysis.chordProgression?.length
+    ? analysis.chordProgression
+    : ["unknown"];
+
+  return (
+    <div className="flex h-full min-h-[420px] flex-col gap-4 overflow-auto bg-[#fbfbf3] p-4 text-zinc-950">
+      <div className="flex items-start justify-between gap-3 border-b border-zinc-300 pb-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-fern">
+            Claude Result
+          </p>
+          <h3 className="text-2xl font-black tracking-normal">Score Analysis</h3>
+        </div>
+        <Sparkles className="h-6 w-6 text-fern" aria-hidden />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <ResultMetric
+          label="Key"
+          value={analysis.key ?? "unknown"}
+          confidence={analysis.confidence?.key}
+        />
+        <ResultMetric
+          label="Tempo"
+          value={analysis.tempo ?? "unknown"}
+          confidence={analysis.confidence?.tempo}
+        />
+      </div>
+
+      <section className="rounded-md border border-zinc-300 bg-white p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h4 className="text-sm font-black uppercase tracking-[0.16em] text-zinc-600">
+            Chord progression
+          </h4>
+          <span className="text-xs font-bold text-fern">
+            {formatConfidence(analysis.confidence?.chordProgression)}
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {chords.map((chord, index) => (
+            <span
+              key={`${chord}-${index}`}
+              className="rounded-md bg-zinc-950 px-3 py-2 text-sm font-bold text-white"
+            >
+              {chord}
+            </span>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-md border border-zinc-300 bg-zinc-950 p-4 text-zinc-100">
+        <h4 className="mb-3 text-sm font-bold uppercase tracking-[0.16em] text-moss">
+          Raw JSON
+        </h4>
+        <pre className="max-h-56 overflow-auto whitespace-pre-wrap text-xs leading-5 text-zinc-300">
+          {JSON.stringify(raw, null, 2)}
+        </pre>
+      </section>
+    </div>
+  );
+}
+
+function ResultMetric({
+  label,
+  value,
+  confidence
+}: {
+  label: string;
+  value: string;
+  confidence?: number;
+}) {
+  return (
+    <div className="rounded-md border border-zinc-300 bg-white p-4">
+      <p className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
+        {label}
+      </p>
+      <p className="mt-2 text-2xl font-black text-zinc-950">{value}</p>
+      <p className="mt-2 text-xs font-bold text-fern">{formatConfidence(confidence)}</p>
+    </div>
+  );
+}
+
+function formatConfidence(confidence?: number) {
+  if (typeof confidence !== "number") return "confidence unknown";
+  return `${Math.round(confidence * 100)}% confidence`;
+}
+
 function AdlibPreview({ hasGenerated }: { hasGenerated: boolean }) {
   return (
     <div className="flex h-full min-h-[420px] flex-col bg-[#fbfbf3] p-4 text-zinc-950">
       <div className="mb-4 flex items-start justify-between gap-3 border-b border-zinc-300 pb-3">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-fern">
-            Generated Adlib
+            Waiting for analysis
           </p>
           <h3 className="text-2xl font-black tracking-normal">Solo Sketch No. 01</h3>
         </div>
@@ -284,7 +446,6 @@ function AdlibPreview({ hasGenerated }: { hasGenerated: boolean }) {
                 <span key={line} className="h-px w-full bg-zinc-900" />
               ))}
             </div>
-            <div className="absolute left-1 top-0 text-5xl leading-none">{staff === 0 ? "𝄞" : "𝄢"}</div>
             <div className="absolute left-16 right-0 top-4 grid grid-cols-4 gap-3">
               {sampleBars.slice(staff * 2, staff * 2 + 4).map((bar, index) => (
                 <div
@@ -314,8 +475,8 @@ function AdlibPreview({ hasGenerated }: { hasGenerated: boolean }) {
       </div>
 
       <div className="mt-4 flex items-center justify-between border-t border-zinc-300 pt-3 text-xs font-semibold text-zinc-600">
-        <span>{hasGenerated ? "새 애드립 생성 완료" : "스타일을 입력하고 생성 버튼을 누르세요"}</span>
-        <span>BPM 92 · Swing</span>
+        <span>{hasGenerated ? "Analysis complete" : "Press Generate to analyze the score"}</span>
+        <span>BPM 92 - Swing</span>
       </div>
     </div>
   );
