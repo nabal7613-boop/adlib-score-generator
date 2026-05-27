@@ -1,28 +1,123 @@
-{
-  "name": "adlib-score-generator",
-  "version": "0.1.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
-  },
-  "dependencies": {
-    "next": "14.2.5",
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
-    "lucide-react": "0.468.0"
-  },
-  "devDependencies": {
-    "@types/node": "20.14.10",
-    "@types/react": "18.3.3",
-    "@types/react-dom": "18.3.0",
-    "autoprefixer": "10.4.19",
-    "eslint": "8.57.0",
-    "eslint-config-next": "14.2.5",
-    "postcss": "8.4.39",
-    "tailwindcss": "3.4.4",
-    "typescript": "5.5.3"
+import { NextResponse } from "next/server";
+
+export const runtime = "nodejs";
+
+const CLAUDE_MODEL = "claude-sonnet-4-20250514";
+const MAX_FILE_SIZE = 8 * 1024 * 1024;
+
+type ClaudeTextBlock = {
+  type: "text";
+  text: string;
+};
+
+type ClaudeResponse = {
+  content?: ClaudeTextBlock[];
+};
+
+export async function POST(request: Request) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "ANTHROPIC_API_KEY environment variable is not configured." },
+      { status: 500 }
+    );
+  }
+
+  const formData = await request.formData();
+  const uploaded = formData.get("score") ?? formData.get("file");
+
+  if (!(uploaded instanceof File)) {
+    return NextResponse.json(
+      { error: "Upload a score image in the `score` form field." },
+      { status: 400 }
+    );
+  }
+
+  if (!uploaded.type.startsWith("image/")) {
+    return NextResponse.json(
+      { error: "Only image uploads are supported for analysis." },
+      { status: 415 }
+    );
+  }
+
+  if (uploaded.size > MAX_FILE_SIZE) {
+    return NextResponse.json(
+      { error: "The uploaded image must be 8MB or smaller." },
+      { status: 413 }
+    );
+  }
+
+  const imageBuffer = Buffer.from(await uploaded.arrayBuffer());
+  const base64Image = imageBuffer.toString("base64");
+
+  const claudeResponse = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+      "x-api-key": apiKey
+    },
+    body: JSON.stringify({
+      model: CLAUDE_MODEL,
+      max_tokens: 700,
+      temperature: 0,
+      system:
+        "You are a music theory assistant. Analyze the uploaded sheet music image and return only valid JSON.",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: uploaded.type,
+                data: base64Image
+              }
+            },
+            {
+              type: "text",
+              text:
+                "Analyze this score image. Return only JSON with this exact shape: {\"key\":\"string or unknown\",\"tempo\":\"string or unknown\",\"chordProgression\":[\"chord symbols in order\"],\"confidence\":{\"key\":0-1,\"tempo\":0-1,\"chordProgression\":0-1}}. Do not include markdown."
+            }
+          ]
+        }
+      ]
+    })
+  });
+
+  if (!claudeResponse.ok) {
+    const detail = await claudeResponse.text();
+
+    return NextResponse.json(
+      {
+        error: "Claude analysis failed.",
+        detail
+      },
+      { status: claudeResponse.status }
+    );
+  }
+
+  const payload = (await claudeResponse.json()) as ClaudeResponse;
+  const text = payload.content?.find((block) => block.type === "text")?.text;
+
+  if (!text) {
+    return NextResponse.json(
+      { error: "Claude did not return an analysis result." },
+      { status: 502 }
+    );
+  }
+
+  try {
+    return NextResponse.json(JSON.parse(text));
+  } catch {
+    return NextResponse.json(
+      {
+        error: "Claude returned invalid JSON.",
+        raw: text
+      },
+      { status: 502 }
+    );
   }
 }

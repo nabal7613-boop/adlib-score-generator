@@ -1,25 +1,5 @@
-import type { Config } from "tailwindcss";
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
 
-const config: Config = {
-  content: [
-    "./app/**/*.{js,ts,jsx,tsx,mdx}",
-    "./components/**/*.{js,ts,jsx,tsx,mdx}"
-  ],
-  theme: {
-    extend: {
-      colors: {
-        ink: "#060807",
-        moss: "#1ed760",
-        fern: "#16a34a",
-        graphite: "#151918",
-        line: "rgba(255,255,255,0.12)"
-      },
-      boxShadow: {
-        glow: "0 0 50px rgba(30, 215, 96, 0.18)"
-      }
-    }
-  },
-  plugins: []
-};
-
-export default config;
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/basic-features/typescript for more information.
