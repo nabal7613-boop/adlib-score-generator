@@ -49,9 +49,10 @@ type ScoreSection = {
   endBar?: number;
 };
 
+// ✅ 수정 1: 쉼표 duration 타입 추가
 type MelodyNote = {
   keys: string[];
-  duration: "8" | "q" | "h" | string;
+  duration: "8" | "q" | "h" | "w" | "8r" | "qr" | "hr" | string;
   chord?: string;
 };
 
@@ -67,6 +68,7 @@ type MelodyResult = {
   barChords?: BarChord[];
   sections?: ScoreSection[];
   notes?: MelodyNote[];
+  fallback?: boolean;
 };
 
 const sampleBars = [
@@ -93,7 +95,6 @@ export default function Home() {
 
   const fileMeta = useMemo(() => {
     if (!score) return null;
-
     const sizeInMb = score.file.size / 1024 / 1024;
     return `${score.file.name} - ${sizeInMb.toFixed(sizeInMb > 1 ? 1 : 2)}MB`;
   }, [score]);
@@ -112,11 +113,7 @@ export default function Home() {
 
     setScore((current) => {
       if (current) URL.revokeObjectURL(current.url);
-      return {
-        file,
-        url: URL.createObjectURL(file),
-        kind: isPdf ? "pdf" : "image"
-      };
+      return { file, url: URL.createObjectURL(file), kind: isPdf ? "pdf" : "image" };
     });
     setHasGenerated(false);
     setAnalysis(null);
@@ -159,9 +156,7 @@ export default function Home() {
         body: formData
       });
 
-      const analysisData = (await analysisResponse.json()) as AnalysisResult & {
-        error?: string;
-      };
+      const analysisData = (await analysisResponse.json()) as AnalysisResult & { error?: string };
 
       if (!analysisResponse.ok) {
         throw new Error(analysisData.error ?? "Score analysis failed.");
@@ -172,9 +167,7 @@ export default function Home() {
 
       const melodyResponse = await fetch("/api/generate-melody", {
         method: "POST",
-        headers: {
-          "content-type": "application/json"
-        },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({
           title: analysisData.title,
           composer: analysisData.composer,
@@ -190,9 +183,7 @@ export default function Home() {
         })
       });
 
-      const melodyData = (await melodyResponse.json()) as MelodyResult & {
-        error?: string;
-      };
+      const melodyData = (await melodyResponse.json()) as MelodyResult & { error?: string };
 
       if (!melodyResponse.ok) {
         throw new Error(melodyData.error ?? "Melody generation failed.");
@@ -243,10 +234,7 @@ export default function Home() {
         {!score ? (
           <section className="grid flex-1 place-items-center rounded-lg border border-line bg-black/35 p-4 shadow-glow">
             <label
-              onDragOver={(event) => {
-                event.preventDefault();
-                setIsDragging(true);
-              }}
+              onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }}
               onDragLeave={() => setIsDragging(false)}
               onDrop={handleDrop}
               className={`flex min-h-[420px] w-full cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed p-6 text-center transition sm:min-h-[520px] ${
@@ -278,24 +266,11 @@ export default function Home() {
         ) : (
           <>
             <section className="grid flex-1 grid-cols-1 gap-5 lg:grid-cols-2">
-              <ScorePanel
-                title="Original score"
-                meta={fileMeta}
-                action={removeScore}
-                actionLabel="Remove upload"
-              >
+              <ScorePanel title="Original score" meta={fileMeta} action={removeScore} actionLabel="Remove upload">
                 {score.kind === "pdf" ? (
-                  <iframe
-                    title="Original PDF score"
-                    src={score.url}
-                    className="h-full min-h-[420px] w-full rounded-md border-0 bg-zinc-950"
-                  />
+                  <iframe title="Original PDF score" src={score.url} className="h-full min-h-[420px] w-full rounded-md border-0 bg-zinc-950" />
                 ) : (
-                  <img
-                    src={score.url}
-                    alt="Uploaded original score"
-                    className="h-full min-h-[420px] w-full rounded-md object-contain"
-                  />
+                  <img src={score.url} alt="Uploaded original score" className="h-full min-h-[420px] w-full rounded-md object-contain" />
                 )}
               </ScorePanel>
 
@@ -314,10 +289,7 @@ export default function Home() {
               </ScorePanel>
             </section>
 
-            <form
-              onSubmit={generateAdlib}
-              className="rounded-lg border border-line bg-white/[0.05] p-3 backdrop-blur"
-            >
+            <form onSubmit={generateAdlib} className="rounded-lg border border-line bg-white/[0.05] p-3 backdrop-blur">
               <div className="flex flex-col gap-3 md:flex-row md:items-center">
                 <div className="flex min-w-0 flex-1 items-center gap-3 rounded-lg border border-line bg-black/35 px-4 py-3">
                   <Wand2 className="h-5 w-5 shrink-0 text-moss" aria-hidden />
@@ -325,7 +297,7 @@ export default function Home() {
                     value={style}
                     onChange={(event) => setStyle(event.target.value)}
                     className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-zinc-500 sm:text-base"
-                    placeholder="e.g. funky jazz, fast bebop, R&B vocal adlib"
+                    placeholder="예: 마일스 데이비스 느낌으로, 비밥 스타일로, 발라드 감성으로"
                   />
                 </div>
                 <button
@@ -349,36 +321,19 @@ export default function Home() {
   );
 }
 
-function ScorePanel({
-  title,
-  meta,
-  action,
-  actionLabel,
-  children
-}: {
-  title: string;
-  meta?: string | null;
-  action?: () => void;
-  actionLabel?: string;
-  children: React.ReactNode;
+function ScorePanel({ title, meta, action, actionLabel, children }: {
+  title: string; meta?: string | null; action?: () => void; actionLabel?: string; children: React.ReactNode;
 }) {
   return (
     <article className="flex min-h-[520px] flex-col rounded-lg border border-line bg-black/40 p-3 shadow-[0_18px_80px_rgba(0,0,0,0.35)]">
       <div className="mb-3 flex items-center justify-between gap-3 px-1">
         <div className="min-w-0">
           <h2 className="text-base font-bold text-white">{title}</h2>
-          {meta ? (
-            <p className="truncate text-xs text-zinc-500 sm:text-sm">{meta}</p>
-          ) : null}
+          {meta ? <p className="truncate text-xs text-zinc-500 sm:text-sm">{meta}</p> : null}
         </div>
         {action ? (
-          <button
-            type="button"
-            onClick={action}
-            aria-label={actionLabel}
-            title={actionLabel}
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-line text-zinc-300 transition hover:border-moss/70 hover:text-white"
-          >
+          <button type="button" onClick={action} aria-label={actionLabel} title={actionLabel}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-line text-zinc-300 transition hover:border-moss/70 hover:text-white">
             <X className="h-4 w-4" aria-hidden />
           </button>
         ) : null}
@@ -395,9 +350,7 @@ function LoadingAnalysis({ text }: { text: string }) {
     <div className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-md bg-graphite">
       <Loader2 className="h-12 w-12 animate-spin text-moss" aria-hidden />
       <p className="mt-4 text-lg font-semibold text-white">{text}</p>
-      <p className="mt-2 text-sm text-zinc-400">
-        Claude is reading the score and composing notation-ready adlib notes.
-      </p>
+      <p className="mt-2 text-sm text-zinc-400">Claude is reading the score and composing adlib notes.</p>
     </div>
   );
 }
@@ -412,37 +365,23 @@ function ErrorResult({ message }: { message: string }) {
   );
 }
 
-function MelodyScoreView({
-  melody,
-  analysis
-}: {
-  melody: MelodyResult;
-  analysis: AnalysisResult | null;
-}) {
+function MelodyScoreView({ melody, analysis }: { melody: MelodyResult; analysis: AnalysisResult | null }) {
   return (
     <div className="flex h-full min-h-[420px] flex-col gap-4 overflow-auto bg-[#fbfbf3] p-4 text-zinc-950">
       <div className="flex items-start justify-between gap-3 border-b border-zinc-300 pb-3">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.2em] text-fern">
-            Layout matched adlib
-          </p>
-          <h3 className="text-2xl font-black tracking-normal">
-            {melody.title ?? analysis?.title ?? "Claude Melody"}
-          </h3>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-fern">Layout matched adlib</p>
+          <h3 className="text-2xl font-black tracking-normal">{melody.title ?? analysis?.title ?? "Claude Melody"}</h3>
           <p className="mt-1 text-sm font-semibold text-zinc-600">
-            Key {melody.key ?? analysis?.key ?? "unknown"} - Tempo{" "}
-            {melody.tempo ?? analysis?.tempo ?? "unknown"}
+            Key {melody.key ?? analysis?.key ?? "unknown"} - Tempo {melody.tempo ?? analysis?.tempo ?? "unknown"}
+            {melody.fallback && <span className="ml-2 text-xs text-amber-600">(fallback)</span>}
           </p>
         </div>
         <Sparkles className="h-6 w-6 text-fern" aria-hidden />
       </div>
-
       <VexFlowScore melody={melody} analysis={analysis} />
-
       <section className="rounded-md border border-zinc-300 bg-zinc-950 p-4 text-zinc-100">
-        <h4 className="mb-3 text-sm font-bold uppercase tracking-[0.16em] text-moss">
-          Melody JSON
-        </h4>
+        <h4 className="mb-3 text-sm font-bold uppercase tracking-[0.16em] text-moss">Melody JSON</h4>
         <pre className="max-h-40 overflow-auto whitespace-pre-wrap text-xs leading-5 text-zinc-300">
           {JSON.stringify(melody, null, 2)}
         </pre>
@@ -451,13 +390,7 @@ function MelodyScoreView({
   );
 }
 
-function VexFlowScore({
-  melody,
-  analysis
-}: {
-  melody: MelodyResult;
-  analysis: AnalysisResult | null;
-}) {
+function VexFlowScore({ melody, analysis }: { melody: MelodyResult; analysis: AnalysisResult | null }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
 
@@ -466,31 +399,19 @@ function VexFlowScore({
 
     async function renderScore() {
       if (!containerRef.current) return;
-
       const container = containerRef.current;
       container.innerHTML = "";
       setRenderError(null);
 
       try {
-        const { Annotation, Barline, Formatter, Renderer, Stave, StaveNote, Voice } =
-          await import("vexflow");
+        const { Annotation, Barline, Formatter, Renderer, Stave, StaveNote, Voice } = await import("vexflow");
         const notes = melody.notes?.length ? melody.notes : fallbackNotes();
         const totalBars = clampLayoutNumber(melody.totalBars ?? analysis?.totalBars, 4, 64, 4);
-        const barsPerLine = clampLayoutNumber(
-          melody.barsPerLine ?? analysis?.barsPerLine,
-          1,
-          8,
-          4
-        );
-        const chordProgression =
-          melody.chordProgression ?? analysis?.chordProgression ?? undefined;
+        const barsPerLine = clampLayoutNumber(melody.barsPerLine ?? analysis?.barsPerLine, 1, 8, 4);
+        const chordProgression = melody.chordProgression ?? analysis?.chordProgression ?? undefined;
         const barChords = melody.barChords ?? analysis?.barChords;
         const sections = melody.sections ?? analysis?.sections ?? [{ label: "A", startBar: 1 }];
-        const measures = splitIntoMeasures(notes, {
-          chordProgression,
-          barChords,
-          totalBars
-        });
+        const measures = splitIntoMeasures(notes, { chordProgression, barChords, totalBars });
 
         if (cancelled) return;
 
@@ -514,28 +435,27 @@ function VexFlowScore({
           const stave = new Stave(x, y, measureWidth);
 
           if (lineBarIndex === 0) {
-            stave.addClef("treble").addTimeSignature(
-              melody.timeSignature ?? analysis?.timeSignature ?? "4/4"
-            );
+            stave.addClef("treble").addTimeSignature(melody.timeSignature ?? analysis?.timeSignature ?? "4/4");
           }
 
-          stave.setBegBarType(
-            lineBarIndex === 0 ? Barline.type.SINGLE : Barline.type.NONE
-          );
-          stave.setEndBarType(
-            measureIndex === measures.length - 1 ? Barline.type.END : Barline.type.SINGLE
-          );
+          stave.setBegBarType(lineBarIndex === 0 ? Barline.type.SINGLE : Barline.type.NONE);
+          stave.setEndBarType(measureIndex === measures.length - 1 ? Barline.type.END : Barline.type.SINGLE);
           stave.setContext(context).draw();
 
           const staveNotes = measure.notes.map((note, noteIndex) => {
-            const keys = note.keys?.length ? note.keys : ["c/4"];
+            const duration = normalizeDuration(note.duration);
+            const isRest = duration.endsWith("r");
+            // 쉼표는 b/4 위치 사용, 일반 음표는 원래 키 사용
+            const keys = isRest ? ["b/4"] : (note.keys?.length ? note.keys : ["c/4"]);
+
             const staveNote = new StaveNote({
               clef: "treble",
               keys: keys.map(normalizeVexKey),
-              duration: normalizeDuration(note.duration)
+              duration
             });
 
-            if (noteIndex === 0) {
+            // 첫 번째 음표에만 코드 표시 (쉼표 제외)
+            if (noteIndex === 0 && !isRest) {
               staveNote.addModifier(
                 new Annotation(measure.chord)
                   .setFont("Arial", 13, "bold")
@@ -560,13 +480,7 @@ function VexFlowScore({
           addLeadSheetDecorations(svg, {
             title: melody.title ?? analysis?.title ?? "Untitled",
             composer: melody.composer ?? analysis?.composer ?? "",
-            totalBars,
-            barsPerLine,
-            measureWidth,
-            left,
-            scoreTop,
-            lineHeight,
-            sections
+            totalBars, barsPerLine, measureWidth, left, scoreTop, lineHeight, sections
           });
         }
       } catch (error) {
@@ -576,10 +490,7 @@ function VexFlowScore({
     }
 
     renderScore();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [analysis, melody]);
 
   return (
@@ -600,21 +511,16 @@ function normalizeVexKey(key: string) {
   return key.trim().toLowerCase().replace(/\s+/g, "");
 }
 
+// ✅ 수정 2: 쉼표 duration 허용
 function normalizeDuration(duration: string) {
-  if (["8", "q", "h"].includes(duration)) return duration;
+  if (["8", "q", "h", "w", "8r", "qr", "hr", "wr"].includes(duration)) return duration;
   return "q";
 }
 
 function splitIntoMeasures(
   notes: MelodyNote[],
-  {
-    chordProgression,
-    barChords,
-    totalBars
-  }: {
-    chordProgression?: string[];
-    barChords?: BarChord[];
-    totalBars: number;
+  { chordProgression, barChords, totalBars }: {
+    chordProgression?: string[]; barChords?: BarChord[]; totalBars: number;
   }
 ) {
   const measures: Array<{ chord: string; notes: MelodyNote[] }> = [];
@@ -663,12 +569,7 @@ function splitIntoMeasures(
   return measures.slice(0, totalBars);
 }
 
-function getMeasureChord(
-  measureIndex: number,
-  notes: MelodyNote[],
-  chordProgression?: string[],
-  barChords?: BarChord[]
-) {
+function getMeasureChord(measureIndex: number, notes: MelodyNote[], chordProgression?: string[], barChords?: BarChord[]) {
   return (
     barChords?.find((entry) => entry.bar === measureIndex + 1)?.chord ??
     chordProgression?.[measureIndex] ??
@@ -677,10 +578,12 @@ function getMeasureChord(
   );
 }
 
+// ✅ 수정 3: 쉼표 박자 처리
 function getDurationBeats(duration: string) {
-  if (duration === "h") return 2;
-  if (duration === "8") return 0.5;
-  return 1;
+  if (duration === "w" || duration === "wr") return 4;
+  if (duration === "h" || duration === "hr") return 2;
+  if (duration === "8" || duration === "8r") return 0.5;
+  return 1; // q, qr
 }
 
 function fallbackNotes(): MelodyNote[] {
@@ -704,40 +607,17 @@ function fallbackNotes(): MelodyNote[] {
   ];
 }
 
-function clampLayoutNumber(
-  value: number | undefined,
-  min: number,
-  max: number,
-  fallback: number
-) {
+function clampLayoutNumber(value: number | undefined, min: number, max: number, fallback: number) {
   if (!Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.round(value as number)));
 }
 
-function addLeadSheetDecorations(
-  svg: SVGSVGElement,
-  {
-    title,
-    composer,
-    totalBars,
-    barsPerLine,
-    measureWidth,
-    left,
-    scoreTop,
-    lineHeight,
-    sections
-  }: {
-    title: string;
-    composer: string;
-    totalBars: number;
-    barsPerLine: number;
-    measureWidth: number;
-    left: number;
-    scoreTop: number;
-    lineHeight: number;
-    sections: ScoreSection[];
-  }
-) {
+function addLeadSheetDecorations(svg: SVGSVGElement, {
+  title, composer, totalBars, barsPerLine, measureWidth, left, scoreTop, lineHeight, sections
+}: {
+  title: string; composer: string; totalBars: number; barsPerLine: number;
+  measureWidth: number; left: number; scoreTop: number; lineHeight: number; sections: ScoreSection[];
+}) {
   const ns = "http://www.w3.org/2000/svg";
   const width = Number(svg.getAttribute("width")) || 760;
 
@@ -790,57 +670,32 @@ function addLeadSheetDecorations(
   });
 }
 
-function AnalysisResultView({
-  analysis,
-  raw
-}: {
-  analysis: AnalysisResult;
-  raw: AnalysisResult;
-}) {
-  const chords = analysis.chordProgression?.length
-    ? analysis.chordProgression
-    : ["unknown"];
+function AnalysisResultView({ analysis, raw }: { analysis: AnalysisResult; raw: AnalysisResult }) {
+  const chords = analysis.chordProgression?.length ? analysis.chordProgression : ["unknown"];
 
   return (
     <div className="flex h-full min-h-[420px] flex-col gap-4 overflow-auto bg-[#fbfbf3] p-4 text-zinc-950">
       <div className="flex items-start justify-between gap-3 border-b border-zinc-300 pb-3">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.2em] text-fern">
-            Claude Result
-          </p>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-fern">Claude Result</p>
           <h3 className="text-2xl font-black tracking-normal">Score Analysis</h3>
         </div>
         <Sparkles className="h-6 w-6 text-fern" aria-hidden />
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <ResultMetric
-          label="Key"
-          value={analysis.key ?? "unknown"}
-          confidence={analysis.confidence?.key}
-        />
-        <ResultMetric
-          label="Tempo"
-          value={analysis.tempo ?? "unknown"}
-          confidence={analysis.confidence?.tempo}
-        />
+        <ResultMetric label="Key" value={analysis.key ?? "unknown"} confidence={analysis.confidence?.key} />
+        <ResultMetric label="Tempo" value={analysis.tempo ?? "unknown"} confidence={analysis.confidence?.tempo} />
       </div>
 
       <section className="rounded-md border border-zinc-300 bg-white p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h4 className="text-sm font-black uppercase tracking-[0.16em] text-zinc-600">
-            Chord progression
-          </h4>
-          <span className="text-xs font-bold text-fern">
-            {formatConfidence(analysis.confidence?.chordProgression)}
-          </span>
+          <h4 className="text-sm font-black uppercase tracking-[0.16em] text-zinc-600">Chord progression</h4>
+          <span className="text-xs font-bold text-fern">{formatConfidence(analysis.confidence?.chordProgression)}</span>
         </div>
         <div className="flex flex-wrap gap-2">
           {chords.map((chord, index) => (
-            <span
-              key={`${chord}-${index}`}
-              className="rounded-md bg-zinc-950 px-3 py-2 text-sm font-bold text-white"
-            >
+            <span key={`${chord}-${index}`} className="rounded-md bg-zinc-950 px-3 py-2 text-sm font-bold text-white">
               {chord}
             </span>
           ))}
@@ -848,9 +703,7 @@ function AnalysisResultView({
       </section>
 
       <section className="rounded-md border border-zinc-300 bg-zinc-950 p-4 text-zinc-100">
-        <h4 className="mb-3 text-sm font-bold uppercase tracking-[0.16em] text-moss">
-          Raw JSON
-        </h4>
+        <h4 className="mb-3 text-sm font-bold uppercase tracking-[0.16em] text-moss">Raw JSON</h4>
         <pre className="max-h-56 overflow-auto whitespace-pre-wrap text-xs leading-5 text-zinc-300">
           {JSON.stringify(raw, null, 2)}
         </pre>
@@ -859,20 +712,10 @@ function AnalysisResultView({
   );
 }
 
-function ResultMetric({
-  label,
-  value,
-  confidence
-}: {
-  label: string;
-  value: string;
-  confidence?: number;
-}) {
+function ResultMetric({ label, value, confidence }: { label: string; value: string; confidence?: number }) {
   return (
     <div className="rounded-md border border-zinc-300 bg-white p-4">
-      <p className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
-        {label}
-      </p>
+      <p className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">{label}</p>
       <p className="mt-2 text-2xl font-black text-zinc-950">{value}</p>
       <p className="mt-2 text-xs font-bold text-fern">{formatConfidence(confidence)}</p>
     </div>
@@ -889,9 +732,7 @@ function AdlibPreview({ hasGenerated }: { hasGenerated: boolean }) {
     <div className="flex h-full min-h-[420px] flex-col bg-[#fbfbf3] p-4 text-zinc-950">
       <div className="mb-4 flex items-start justify-between gap-3 border-b border-zinc-300 pb-3">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.2em] text-fern">
-            Waiting for analysis
-          </p>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-fern">Waiting for analysis</p>
           <h3 className="text-2xl font-black tracking-normal">Solo Sketch No. 01</h3>
         </div>
         <Sparkles className="h-6 w-6 text-fern" aria-hidden />
@@ -907,23 +748,10 @@ function AdlibPreview({ hasGenerated }: { hasGenerated: boolean }) {
             </div>
             <div className="absolute left-16 right-0 top-4 grid grid-cols-4 gap-3">
               {sampleBars.slice(staff * 2, staff * 2 + 4).map((bar, index) => (
-                <div
-                  key={`${bar}-${index}`}
-                  className="relative h-12 border-l border-zinc-800 pl-2"
-                >
-                  <span className="absolute -top-4 left-2 text-[11px] font-bold text-fern">
-                    {bar}
-                  </span>
-                  <span
-                    className={`absolute h-3 w-3 rounded-full bg-zinc-950 ${
-                      index % 2 === 0 ? "top-3" : "top-7"
-                    }`}
-                  />
-                  <span
-                    className={`absolute left-8 h-3 w-3 rounded-full bg-zinc-950 ${
-                      index % 3 === 0 ? "top-1" : "top-5"
-                    }`}
-                  />
+                <div key={`${bar}-${index}`} className="relative h-12 border-l border-zinc-800 pl-2">
+                  <span className="absolute -top-4 left-2 text-[11px] font-bold text-fern">{bar}</span>
+                  <span className={`absolute h-3 w-3 rounded-full bg-zinc-950 ${index % 2 === 0 ? "top-3" : "top-7"}`} />
+                  <span className={`absolute left-8 h-3 w-3 rounded-full bg-zinc-950 ${index % 3 === 0 ? "top-1" : "top-5"}`} />
                   <span className="absolute left-12 top-2 h-8 w-px bg-zinc-950" />
                   <span className="absolute left-20 top-6 h-3 w-3 rounded-full bg-zinc-950" />
                 </div>
