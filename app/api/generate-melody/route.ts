@@ -115,8 +115,8 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({
         model: CLAUDE_MODEL,
-        max_tokens: 1200,
-        temperature: 0.7,
+        max_tokens: 1800,
+        temperature: 0.85,
         system:
           "You are a JSON API that composes short jazz adlib melodies for VexFlow. You must return exactly one valid JSON object and nothing else. Do not use markdown, code fences, explanations, comments, trailing commas, or prose before or after the JSON.",
         messages: [
@@ -139,6 +139,14 @@ Inputs:
 - barChords: ${JSON.stringify(barChords)}
 - sections: ${JSON.stringify(sections)}
 - style: ${style}
+
+CHORD-SCALE MAP:
+- Cmaj7: choose from C D E G A B. Emphasize chord tones C E G B; use D/A as passing or color tones.
+- E7: choose from E F# G# B D. Emphasize E G# B D; use F# as passing tone.
+- A7: choose from A B C# E G. Emphasize A C# E G; use B as passing tone.
+- Dm or Dm7: choose from D E F G A C. Emphasize D F A C; use E/G as passing tones.
+- G7: choose from G A B D F. Emphasize G B D F; use A as passing tone.
+- For any other chord, infer a close chord-scale and keep strong beats on chord tones.
 
 STRICT OUTPUT CONTRACT:
 - Your entire response must be parseable by JSON.parse().
@@ -169,6 +177,7 @@ Return exactly this JSON schema:
 
 Rules:
 - Preserve title, composer, totalBars, barsPerLine, barChords, and sections exactly from the inputs.
+- Generate a fresh adlib melody for the full chord progression. Do not repeat the same first four bars.
 - Generate enough notes to fill totalBars bars in 4/4.
 - The total duration must equal exactly totalBars * 4 quarter-note beats.
 - Return chordProgression as one chord symbol per bar, matching barChords order.
@@ -176,7 +185,12 @@ Rules:
 - Use VexFlow-compatible durations only: "8", "q", "h".
 - Every note object must include "keys", "duration", and "chord".
 - The "chord" value for each note must match the chord for its current 4/4 bar.
-- Prefer mostly eighth notes and quarter notes.
+- Compose each bar from the note pool that matches that bar's chord.
+- Make every bar rhythmically or melodically different from adjacent bars.
+- Use swing phrasing: mostly eighth notes, occasional quarter notes, and short syncopated cells.
+- Put chord tones on strong beats 1 and 3 when possible.
+- Mix passing notes between chord tones, but avoid random scale runs.
+- Shape phrases with contour, call-and-response, and resolution into the next bar.
 - Keep notes readable on treble clef between c/4 and c/6.
 - Reflect the requested style in contour and rhythm.
 - Return JSON only.`
@@ -334,17 +348,10 @@ function createFallbackMelody({
   sections: ScoreSection[];
 }): MelodyResponse {
   const chords = chordProgression.length ? chordProgression : ["Cmaj7", "Am7", "Dm7", "G7"];
-  const scale = ["c/4", "d/4", "e/4", "g/4", "a/4", "c/5", "b/4", "g/4"];
-  const notes = Array.from({ length: totalBars * 4 }, (_, index) => {
-    const barIndex = Math.floor(index / 4);
+  const notes = Array.from({ length: totalBars }, (_, barIndex) => {
     const chord = barChords[barIndex]?.chord ?? chords[barIndex % chords.length] ?? "Cmaj7";
-
-    return {
-      keys: [scale[index % scale.length]],
-      duration: "q" as const,
-      chord
-    };
-  });
+    return createBarNotes(chord, barIndex);
+  }).flat();
 
   return {
     title,
@@ -363,6 +370,118 @@ function createFallbackMelody({
     fallback: true,
     notes
   };
+}
+
+function createBarNotes(chord: string, barIndex: number): MelodyResponse["notes"] {
+  const palette = getChordPalette(chord);
+  const octaveShift = barIndex % 3 === 2 ? 1 : 0;
+  const note = (name: string, octave = 4) => toVexKey(name, octave + octaveShift);
+  const root = note(palette.chordTones[0]);
+  const third = note(palette.chordTones[1] ?? palette.scale[1]);
+  const fifth = note(palette.chordTones[2] ?? palette.scale[2]);
+  const seventh = note(palette.chordTones[3] ?? palette.scale[3], octaveShift ? 4 : 5);
+  const passA = note(palette.passing[0] ?? palette.scale[1]);
+  const passB = note(palette.passing[1] ?? palette.scale[2]);
+
+  const patterns: Array<Array<{ key: string; duration: "8" | "q"; chord: string }>> = [
+    [
+      { key: root, duration: "8", chord },
+      { key: passA, duration: "8", chord },
+      { key: third, duration: "q", chord },
+      { key: fifth, duration: "8", chord },
+      { key: seventh, duration: "8", chord },
+      { key: fifth, duration: "q", chord }
+    ],
+    [
+      { key: third, duration: "q", chord },
+      { key: fifth, duration: "8", chord },
+      { key: passB, duration: "8", chord },
+      { key: seventh, duration: "q", chord },
+      { key: fifth, duration: "8", chord },
+      { key: third, duration: "8", chord }
+    ],
+    [
+      { key: fifth, duration: "8", chord },
+      { key: seventh, duration: "8", chord },
+      { key: passA, duration: "8", chord },
+      { key: third, duration: "8", chord },
+      { key: root, duration: "q", chord },
+      { key: passB, duration: "q", chord }
+    ],
+    [
+      { key: seventh, duration: "q", chord },
+      { key: fifth, duration: "8", chord },
+      { key: third, duration: "8", chord },
+      { key: passA, duration: "q", chord },
+      { key: root, duration: "8", chord },
+      { key: third, duration: "8", chord }
+    ]
+  ];
+
+  return patterns[barIndex % patterns.length].map((entry) => ({
+    keys: [entry.key],
+    duration: entry.duration,
+    chord: entry.chord
+  }));
+}
+
+function getChordPalette(chord: string) {
+  const normalized = chord.toLowerCase().replace(/\s+/g, "");
+
+  if (normalized.startsWith("cmaj7") || normalized.startsWith("cmaj")) {
+    return {
+      scale: ["C", "D", "E", "G", "A", "B"],
+      chordTones: ["C", "E", "G", "B"],
+      passing: ["D", "A"]
+    };
+  }
+
+  if (normalized.startsWith("e7")) {
+    return {
+      scale: ["E", "F#", "G#", "B", "D"],
+      chordTones: ["E", "G#", "B", "D"],
+      passing: ["F#"]
+    };
+  }
+
+  if (normalized.startsWith("a7")) {
+    return {
+      scale: ["A", "B", "C#", "E", "G"],
+      chordTones: ["A", "C#", "E", "G"],
+      passing: ["B"]
+    };
+  }
+
+  if (normalized.startsWith("dm")) {
+    return {
+      scale: ["D", "E", "F", "G", "A", "C"],
+      chordTones: ["D", "F", "A", "C"],
+      passing: ["E", "G"]
+    };
+  }
+
+  if (normalized.startsWith("g7")) {
+    return {
+      scale: ["G", "A", "B", "D", "F"],
+      chordTones: ["G", "B", "D", "F"],
+      passing: ["A"]
+    };
+  }
+
+  return {
+    scale: ["C", "D", "E", "G", "A", "B"],
+    chordTones: ["C", "E", "G", "B"],
+    passing: ["D", "A"]
+  };
+}
+
+function toVexKey(note: string, octave: number) {
+  const normalized = note
+    .replace("#", "#")
+    .replace("b", "b")
+    .toLowerCase();
+
+  return `${normalized}/${Math.min(5, Math.max(4, octave))}`;
 }
 
 function withLayoutDefaults(
