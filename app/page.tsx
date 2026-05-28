@@ -41,6 +41,7 @@ type MelodyResult = {
   key?: string;
   tempo?: string;
   timeSignature?: string;
+  chordProgression?: string[];
   notes?: MelodyNote[];
 };
 
@@ -434,33 +435,65 @@ function VexFlowScore({ melody }: { melody: MelodyResult }) {
       setRenderError(null);
 
       try {
-        const { Formatter, Renderer, Stave, StaveNote, Voice } = await import("vexflow");
+        const { Annotation, Barline, Formatter, Renderer, Stave, StaveNote, Voice } =
+          await import("vexflow");
         const notes = melody.notes?.length ? melody.notes : fallbackNotes();
+        const measures = splitIntoMeasures(notes, melody.chordProgression);
 
         if (cancelled) return;
 
         const renderer = new Renderer(container, Renderer.Backends.SVG);
-        renderer.resize(760, 260);
+        const measureWidth = 170;
+        const left = 24;
+        const top = 58;
+        const width = Math.max(760, left * 2 + measures.length * measureWidth);
+        renderer.resize(width, 270);
 
         const context = renderer.getContext();
-        const stave = new Stave(24, 46, 700);
-        stave.addClef("treble").addTimeSignature(melody.timeSignature ?? "4/4");
-        stave.setContext(context).draw();
 
-        const staveNotes = notes.map((note) => {
-          const keys = note.keys?.length ? note.keys : ["c/4"];
-          return new StaveNote({
-            clef: "treble",
-            keys: keys.map(normalizeVexKey),
-            duration: normalizeDuration(note.duration)
+        measures.forEach((measure, measureIndex) => {
+          const x = left + measureIndex * measureWidth;
+          const stave = new Stave(x, top, measureWidth);
+
+          if (measureIndex === 0) {
+            stave.addClef("treble").addTimeSignature(melody.timeSignature ?? "4/4");
+          }
+
+          stave.setBegBarType(
+            measureIndex === 0 ? Barline.type.SINGLE : Barline.type.NONE
+          );
+          stave.setEndBarType(
+            measureIndex === measures.length - 1 ? Barline.type.END : Barline.type.SINGLE
+          );
+          stave.setContext(context).draw();
+
+          const staveNotes = measure.notes.map((note, noteIndex) => {
+            const keys = note.keys?.length ? note.keys : ["c/4"];
+            const staveNote = new StaveNote({
+              clef: "treble",
+              keys: keys.map(normalizeVexKey),
+              duration: normalizeDuration(note.duration)
+            });
+
+            if (noteIndex === 0) {
+              staveNote.addModifier(
+                new Annotation(measure.chord)
+                  .setFont("Arial", 13, "bold")
+                  .setVerticalJustification(Annotation.VerticalJustify.TOP),
+                0
+              );
+            }
+
+            return staveNote;
           });
+
+          const voice = new Voice({ num_beats: 4, beat_value: 4 }).setStrict(false);
+          voice.addTickables(staveNotes);
+
+          const formatWidth = measureIndex === 0 ? measureWidth - 78 : measureWidth - 28;
+          new Formatter().joinVoices([voice]).format([voice], formatWidth);
+          voice.draw(context, stave);
         });
-
-        const voice = new Voice({ num_beats: 4, beat_value: 4 }).setStrict(false);
-        voice.addTickables(staveNotes);
-
-        new Formatter().joinVoices([voice]).format([voice], 620);
-        voice.draw(context, stave);
       } catch (error) {
         console.error("[VexFlowScore] Failed to render melody", error);
         setRenderError(error instanceof Error ? error.message : "Failed to render melody.");
@@ -497,16 +530,78 @@ function normalizeDuration(duration: string) {
   return "q";
 }
 
+function splitIntoMeasures(notes: MelodyNote[], chordProgression?: string[]) {
+  const measures: Array<{ chord: string; notes: MelodyNote[] }> = [];
+  let currentNotes: MelodyNote[] = [];
+  let currentBeats = 0;
+
+  notes.forEach((note) => {
+    const noteBeats = getDurationBeats(note.duration);
+
+    if (currentBeats + noteBeats > 4 && currentNotes.length > 0) {
+      measures.push({
+        chord: getMeasureChord(measures.length, currentNotes, chordProgression),
+        notes: currentNotes
+      });
+      currentNotes = [];
+      currentBeats = 0;
+    }
+
+    currentNotes.push(note);
+    currentBeats += noteBeats;
+
+    if (currentBeats >= 4) {
+      measures.push({
+        chord: getMeasureChord(measures.length, currentNotes, chordProgression),
+        notes: currentNotes
+      });
+      currentNotes = [];
+      currentBeats = 0;
+    }
+  });
+
+  if (currentNotes.length > 0) {
+    measures.push({
+      chord: getMeasureChord(measures.length, currentNotes, chordProgression),
+      notes: currentNotes
+    });
+  }
+
+  return measures.length ? measures : [{ chord: "Cmaj7", notes: fallbackNotes() }];
+}
+
+function getMeasureChord(
+  measureIndex: number,
+  notes: MelodyNote[],
+  chordProgression?: string[]
+) {
+  return chordProgression?.[measureIndex] ?? notes.find((note) => note.chord)?.chord ?? "Cmaj7";
+}
+
+function getDurationBeats(duration: string) {
+  if (duration === "h") return 2;
+  if (duration === "8") return 0.5;
+  return 1;
+}
+
 function fallbackNotes(): MelodyNote[] {
   return [
-    { keys: ["c/4"], duration: "q" },
-    { keys: ["e/4"], duration: "q" },
-    { keys: ["g/4"], duration: "q" },
-    { keys: ["b/4"], duration: "q" },
-    { keys: ["a/4"], duration: "8" },
-    { keys: ["g/4"], duration: "8" },
-    { keys: ["e/4"], duration: "q" },
-    { keys: ["d/4"], duration: "q" }
+    { keys: ["c/4"], duration: "q", chord: "Cmaj7" },
+    { keys: ["e/4"], duration: "q", chord: "Cmaj7" },
+    { keys: ["g/4"], duration: "q", chord: "Cmaj7" },
+    { keys: ["b/4"], duration: "q", chord: "Cmaj7" },
+    { keys: ["a/4"], duration: "q", chord: "E7" },
+    { keys: ["g/4"], duration: "q", chord: "E7" },
+    { keys: ["e/4"], duration: "q", chord: "E7" },
+    { keys: ["d/4"], duration: "q", chord: "E7" },
+    { keys: ["f/4"], duration: "q", chord: "A7" },
+    { keys: ["a/4"], duration: "q", chord: "A7" },
+    { keys: ["c/5"], duration: "q", chord: "A7" },
+    { keys: ["a/4"], duration: "q", chord: "A7" },
+    { keys: ["d/4"], duration: "q", chord: "Dm7" },
+    { keys: ["f/4"], duration: "q", chord: "Dm7" },
+    { keys: ["a/4"], duration: "q", chord: "Dm7" },
+    { keys: ["c/5"], duration: "q", chord: "Dm7" }
   ];
 }
 
