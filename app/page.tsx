@@ -20,14 +20,33 @@ type UploadedScore = {
 };
 
 type AnalysisResult = {
+  title?: string;
+  composer?: string;
   key?: string;
   tempo?: string;
+  timeSignature?: string;
+  totalBars?: number;
+  barsPerLine?: number;
   chordProgression?: string[];
+  barChords?: BarChord[];
+  sections?: ScoreSection[];
   confidence?: {
     key?: number;
     tempo?: number;
     chordProgression?: number;
+    layout?: number;
   };
+};
+
+type BarChord = {
+  bar: number;
+  chord: string;
+};
+
+type ScoreSection = {
+  label: string;
+  startBar: number;
+  endBar?: number;
 };
 
 type MelodyNote = {
@@ -38,10 +57,15 @@ type MelodyNote = {
 
 type MelodyResult = {
   title?: string;
+  composer?: string;
   key?: string;
   tempo?: string;
   timeSignature?: string;
+  totalBars?: number;
+  barsPerLine?: number;
   chordProgression?: string[];
+  barChords?: BarChord[];
+  sections?: ScoreSection[];
   notes?: MelodyNote[];
 };
 
@@ -152,9 +176,16 @@ export default function Home() {
           "content-type": "application/json"
         },
         body: JSON.stringify({
+          title: analysisData.title,
+          composer: analysisData.composer,
           key: analysisData.key,
           tempo: analysisData.tempo,
+          timeSignature: analysisData.timeSignature,
+          totalBars: analysisData.totalBars,
+          barsPerLine: analysisData.barsPerLine,
           chordProgression: analysisData.chordProgression,
+          barChords: analysisData.barChords,
+          sections: analysisData.sections,
           style
         })
       });
@@ -393,10 +424,10 @@ function MelodyScoreView({
       <div className="flex items-start justify-between gap-3 border-b border-zinc-300 pb-3">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-fern">
-            Generated Adlib
+            Layout matched adlib
           </p>
           <h3 className="text-2xl font-black tracking-normal">
-            {melody.title ?? "Claude Melody"}
+            {melody.title ?? analysis?.title ?? "Claude Melody"}
           </h3>
           <p className="mt-1 text-sm font-semibold text-zinc-600">
             Key {melody.key ?? analysis?.key ?? "unknown"} - Tempo{" "}
@@ -406,7 +437,7 @@ function MelodyScoreView({
         <Sparkles className="h-6 w-6 text-fern" aria-hidden />
       </div>
 
-      <VexFlowScore melody={melody} />
+      <VexFlowScore melody={melody} analysis={analysis} />
 
       <section className="rounded-md border border-zinc-300 bg-zinc-950 p-4 text-zinc-100">
         <h4 className="mb-3 text-sm font-bold uppercase tracking-[0.16em] text-moss">
@@ -420,7 +451,13 @@ function MelodyScoreView({
   );
 }
 
-function VexFlowScore({ melody }: { melody: MelodyResult }) {
+function VexFlowScore({
+  melody,
+  analysis
+}: {
+  melody: MelodyResult;
+  analysis: AnalysisResult | null;
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
 
@@ -438,29 +475,52 @@ function VexFlowScore({ melody }: { melody: MelodyResult }) {
         const { Annotation, Barline, Formatter, Renderer, Stave, StaveNote, Voice } =
           await import("vexflow");
         const notes = melody.notes?.length ? melody.notes : fallbackNotes();
-        const measures = splitIntoMeasures(notes, melody.chordProgression);
+        const totalBars = clampLayoutNumber(melody.totalBars ?? analysis?.totalBars, 4, 64, 4);
+        const barsPerLine = clampLayoutNumber(
+          melody.barsPerLine ?? analysis?.barsPerLine,
+          1,
+          8,
+          4
+        );
+        const chordProgression =
+          melody.chordProgression ?? analysis?.chordProgression ?? undefined;
+        const barChords = melody.barChords ?? analysis?.barChords;
+        const sections = melody.sections ?? analysis?.sections ?? [{ label: "A", startBar: 1 }];
+        const measures = splitIntoMeasures(notes, {
+          chordProgression,
+          barChords,
+          totalBars
+        });
 
         if (cancelled) return;
 
         const renderer = new Renderer(container, Renderer.Backends.SVG);
-        const measureWidth = 170;
-        const left = 24;
-        const top = 58;
-        const width = Math.max(760, left * 2 + measures.length * measureWidth);
-        renderer.resize(width, 270);
+        const measureWidth = 168;
+        const left = 26;
+        const scoreTop = 108;
+        const lineHeight = 122;
+        const lineCount = Math.ceil(measures.length / barsPerLine);
+        const width = Math.max(760, left * 2 + barsPerLine * measureWidth);
+        const height = Math.max(320, scoreTop + lineCount * lineHeight + 36);
+        renderer.resize(width, height);
 
         const context = renderer.getContext();
 
         measures.forEach((measure, measureIndex) => {
-          const x = left + measureIndex * measureWidth;
-          const stave = new Stave(x, top, measureWidth);
+          const lineIndex = Math.floor(measureIndex / barsPerLine);
+          const lineBarIndex = measureIndex % barsPerLine;
+          const x = left + lineBarIndex * measureWidth;
+          const y = scoreTop + lineIndex * lineHeight;
+          const stave = new Stave(x, y, measureWidth);
 
-          if (measureIndex === 0) {
-            stave.addClef("treble").addTimeSignature(melody.timeSignature ?? "4/4");
+          if (lineBarIndex === 0) {
+            stave.addClef("treble").addTimeSignature(
+              melody.timeSignature ?? analysis?.timeSignature ?? "4/4"
+            );
           }
 
           stave.setBegBarType(
-            measureIndex === 0 ? Barline.type.SINGLE : Barline.type.NONE
+            lineBarIndex === 0 ? Barline.type.SINGLE : Barline.type.NONE
           );
           stave.setEndBarType(
             measureIndex === measures.length - 1 ? Barline.type.END : Barline.type.SINGLE
@@ -490,10 +550,25 @@ function VexFlowScore({ melody }: { melody: MelodyResult }) {
           const voice = new Voice({ num_beats: 4, beat_value: 4 }).setStrict(false);
           voice.addTickables(staveNotes);
 
-          const formatWidth = measureIndex === 0 ? measureWidth - 78 : measureWidth - 28;
+          const formatWidth = lineBarIndex === 0 ? measureWidth - 78 : measureWidth - 28;
           new Formatter().joinVoices([voice]).format([voice], formatWidth);
           voice.draw(context, stave);
         });
+
+        const svg = container.querySelector("svg");
+        if (svg) {
+          addLeadSheetDecorations(svg, {
+            title: melody.title ?? analysis?.title ?? "Untitled",
+            composer: melody.composer ?? analysis?.composer ?? "",
+            totalBars,
+            barsPerLine,
+            measureWidth,
+            left,
+            scoreTop,
+            lineHeight,
+            sections
+          });
+        }
       } catch (error) {
         console.error("[VexFlowScore] Failed to render melody", error);
         setRenderError(error instanceof Error ? error.message : "Failed to render melody.");
@@ -505,7 +580,7 @@ function VexFlowScore({ melody }: { melody: MelodyResult }) {
     return () => {
       cancelled = true;
     };
-  }, [melody]);
+  }, [analysis, melody]);
 
   return (
     <section className="rounded-md border border-zinc-300 bg-white p-3">
@@ -530,7 +605,18 @@ function normalizeDuration(duration: string) {
   return "q";
 }
 
-function splitIntoMeasures(notes: MelodyNote[], chordProgression?: string[]) {
+function splitIntoMeasures(
+  notes: MelodyNote[],
+  {
+    chordProgression,
+    barChords,
+    totalBars
+  }: {
+    chordProgression?: string[];
+    barChords?: BarChord[];
+    totalBars: number;
+  }
+) {
   const measures: Array<{ chord: string; notes: MelodyNote[] }> = [];
   let currentNotes: MelodyNote[] = [];
   let currentBeats = 0;
@@ -540,7 +626,7 @@ function splitIntoMeasures(notes: MelodyNote[], chordProgression?: string[]) {
 
     if (currentBeats + noteBeats > 4 && currentNotes.length > 0) {
       measures.push({
-        chord: getMeasureChord(measures.length, currentNotes, chordProgression),
+        chord: getMeasureChord(measures.length, currentNotes, chordProgression, barChords),
         notes: currentNotes
       });
       currentNotes = [];
@@ -552,7 +638,7 @@ function splitIntoMeasures(notes: MelodyNote[], chordProgression?: string[]) {
 
     if (currentBeats >= 4) {
       measures.push({
-        chord: getMeasureChord(measures.length, currentNotes, chordProgression),
+        chord: getMeasureChord(measures.length, currentNotes, chordProgression, barChords),
         notes: currentNotes
       });
       currentNotes = [];
@@ -562,20 +648,33 @@ function splitIntoMeasures(notes: MelodyNote[], chordProgression?: string[]) {
 
   if (currentNotes.length > 0) {
     measures.push({
-      chord: getMeasureChord(measures.length, currentNotes, chordProgression),
+      chord: getMeasureChord(measures.length, currentNotes, chordProgression, barChords),
       notes: currentNotes
     });
   }
 
-  return measures.length ? measures : [{ chord: "Cmaj7", notes: fallbackNotes() }];
+  while (measures.length < totalBars) {
+    measures.push({
+      chord: getMeasureChord(measures.length, [], chordProgression, barChords),
+      notes: fallbackNotes().slice(0, 4)
+    });
+  }
+
+  return measures.slice(0, totalBars);
 }
 
 function getMeasureChord(
   measureIndex: number,
   notes: MelodyNote[],
-  chordProgression?: string[]
+  chordProgression?: string[],
+  barChords?: BarChord[]
 ) {
-  return chordProgression?.[measureIndex] ?? notes.find((note) => note.chord)?.chord ?? "Cmaj7";
+  return (
+    barChords?.find((entry) => entry.bar === measureIndex + 1)?.chord ??
+    chordProgression?.[measureIndex] ??
+    notes.find((note) => note.chord)?.chord ??
+    "Cmaj7"
+  );
 }
 
 function getDurationBeats(duration: string) {
@@ -603,6 +702,92 @@ function fallbackNotes(): MelodyNote[] {
     { keys: ["a/4"], duration: "q", chord: "Dm7" },
     { keys: ["c/5"], duration: "q", chord: "Dm7" }
   ];
+}
+
+function clampLayoutNumber(
+  value: number | undefined,
+  min: number,
+  max: number,
+  fallback: number
+) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value as number)));
+}
+
+function addLeadSheetDecorations(
+  svg: SVGSVGElement,
+  {
+    title,
+    composer,
+    totalBars,
+    barsPerLine,
+    measureWidth,
+    left,
+    scoreTop,
+    lineHeight,
+    sections
+  }: {
+    title: string;
+    composer: string;
+    totalBars: number;
+    barsPerLine: number;
+    measureWidth: number;
+    left: number;
+    scoreTop: number;
+    lineHeight: number;
+    sections: ScoreSection[];
+  }
+) {
+  const ns = "http://www.w3.org/2000/svg";
+  const width = Number(svg.getAttribute("width")) || 760;
+
+  const titleText = document.createElementNS(ns, "text");
+  titleText.setAttribute("x", String(width / 2));
+  titleText.setAttribute("y", "38");
+  titleText.setAttribute("text-anchor", "middle");
+  titleText.setAttribute("font-family", "Arial, sans-serif");
+  titleText.setAttribute("font-size", "24");
+  titleText.setAttribute("font-weight", "700");
+  titleText.textContent = title;
+  svg.appendChild(titleText);
+
+  const bylineText = document.createElementNS(ns, "text");
+  bylineText.setAttribute("x", String(width - 28));
+  bylineText.setAttribute("y", "66");
+  bylineText.setAttribute("text-anchor", "end");
+  bylineText.setAttribute("font-family", "Arial, sans-serif");
+  bylineText.setAttribute("font-size", "12");
+  bylineText.setAttribute("font-weight", "600");
+  bylineText.textContent = composer ? `${composer} / Adlib by AI` : "Adlib by AI";
+  svg.appendChild(bylineText);
+
+  sections.forEach((section) => {
+    const barIndex = Math.min(totalBars - 1, Math.max(0, section.startBar - 1));
+    const lineIndex = Math.floor(barIndex / barsPerLine);
+    const lineBarIndex = barIndex % barsPerLine;
+    const x = left + lineBarIndex * measureWidth + 2;
+    const y = scoreTop + lineIndex * lineHeight - 30;
+
+    const rect = document.createElementNS(ns, "rect");
+    rect.setAttribute("x", String(x));
+    rect.setAttribute("y", String(y));
+    rect.setAttribute("width", "24");
+    rect.setAttribute("height", "20");
+    rect.setAttribute("fill", "white");
+    rect.setAttribute("stroke", "black");
+    rect.setAttribute("stroke-width", "1.5");
+    svg.appendChild(rect);
+
+    const label = document.createElementNS(ns, "text");
+    label.setAttribute("x", String(x + 12));
+    label.setAttribute("y", String(y + 15));
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("font-family", "Arial, sans-serif");
+    label.setAttribute("font-size", "13");
+    label.setAttribute("font-weight", "700");
+    label.textContent = section.label;
+    svg.appendChild(label);
+  });
 }
 
 function AnalysisResultView({
