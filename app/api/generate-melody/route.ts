@@ -25,6 +25,7 @@ type MelodyResponse = {
   key: string;
   tempo: string;
   timeSignature: "4/4";
+  chordProgression: string[];
   notes: Array<{
     keys: string[];
     duration: "8" | "q" | "h";
@@ -114,6 +115,7 @@ Return exactly this JSON schema:
   "key": "string",
   "tempo": "string",
   "timeSignature": "4/4",
+  "chordProgression": ["Cmaj7", "E7", "A7", "Dm7"],
   "notes": [
     { "keys": ["c/4"], "duration": "q", "chord": "Cmaj7" }
   ]
@@ -121,9 +123,12 @@ Return exactly this JSON schema:
 
 Rules:
 - Generate exactly 16 notes.
+- The total duration must equal exactly 16 quarter-note beats: four bars of 4/4.
+- Return "chordProgression" as exactly 4 chord symbols, one chord per bar.
 - Use VexFlow-compatible note keys like "c/4", "d#/4", "bb/4", "g/5".
 - Use VexFlow-compatible durations only: "8", "q", "h".
 - Every note object must include "keys", "duration", and "chord".
+- The "chord" value for each note must match the chord for its current 4/4 bar.
 - Prefer mostly eighth notes and quarter notes.
 - Keep notes readable on treble clef between c/4 and c/6.
 - Reflect the requested style in contour and rhythm.
@@ -252,6 +257,7 @@ function createFallbackMelody(
     key,
     tempo,
     timeSignature: "4/4",
+    chordProgression: [chords[0], chords[1] ?? chords[0], chords[2] ?? chords[0], chords[3] ?? chords[0]],
     fallback: true,
     notes: [
       { keys: ["c/4"], duration: "8", chord: chords[0] },
