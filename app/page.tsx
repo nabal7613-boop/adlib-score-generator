@@ -11,7 +11,7 @@ import {
   Wand2,
   X
 } from "lucide-react";
-import { DragEvent, FormEvent, useMemo, useState } from "react";
+import { DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type UploadedScore = {
   file: File;
@@ -28,6 +28,20 @@ type AnalysisResult = {
     tempo?: number;
     chordProgression?: number;
   };
+};
+
+type MelodyNote = {
+  keys: string[];
+  duration: "8" | "q" | "h" | string;
+  chord?: string;
+};
+
+type MelodyResult = {
+  title?: string;
+  key?: string;
+  tempo?: string;
+  timeSignature?: string;
+  notes?: MelodyNote[];
 };
 
 const sampleBars = [
@@ -48,7 +62,9 @@ export default function Home() {
   const [style, setStyle] = useState("Jazz ballad, warm voicings, saxophone adlib");
   const [hasGenerated, setHasGenerated] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [melody, setMelody] = useState<MelodyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadingText, setLoadingText] = useState("Analyzing...");
 
   const fileMeta = useMemo(() => {
     if (!score) return null;
@@ -79,6 +95,7 @@ export default function Home() {
     });
     setHasGenerated(false);
     setAnalysis(null);
+    setMelody(null);
     setError(null);
   };
 
@@ -95,6 +112,7 @@ export default function Home() {
     if (score.kind !== "image") {
       setError("Claude analysis currently supports image files. Please upload a score image.");
       setAnalysis(null);
+      setMelody(null);
       setHasGenerated(false);
       return;
     }
@@ -105,22 +123,50 @@ export default function Home() {
 
     setError(null);
     setAnalysis(null);
+    setMelody(null);
     setHasGenerated(false);
+    setLoadingText("Analyzing score...");
     setIsAnalyzing(true);
 
     try {
-      const response = await fetch("/api/analyze", {
+      const analysisResponse = await fetch("/api/analyze", {
         method: "POST",
         body: formData
       });
 
-      const data = await response.json();
+      const analysisData = (await analysisResponse.json()) as AnalysisResult & {
+        error?: string;
+      };
 
-      if (!response.ok) {
-        throw new Error(data.error ?? "Score analysis failed.");
+      if (!analysisResponse.ok) {
+        throw new Error(analysisData.error ?? "Score analysis failed.");
       }
 
-      setAnalysis(data);
+      setAnalysis(analysisData);
+      setLoadingText("Generating adlib melody...");
+
+      const melodyResponse = await fetch("/api/generate-melody", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          key: analysisData.key,
+          tempo: analysisData.tempo,
+          chordProgression: analysisData.chordProgression,
+          style
+        })
+      });
+
+      const melodyData = (await melodyResponse.json()) as MelodyResult & {
+        error?: string;
+      };
+
+      if (!melodyResponse.ok) {
+        throw new Error(melodyData.error ?? "Melody generation failed.");
+      }
+
+      setMelody(melodyData);
       setHasGenerated(true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Score analysis failed.");
@@ -135,6 +181,7 @@ export default function Home() {
     setIsAnalyzing(false);
     setHasGenerated(false);
     setAnalysis(null);
+    setMelody(null);
     setError(null);
   };
 
@@ -222,9 +269,11 @@ export default function Home() {
 
               <ScorePanel title="Claude analysis" meta={style}>
                 {isAnalyzing ? (
-                  <LoadingAnalysis />
+                  <LoadingAnalysis text={loadingText} />
                 ) : error ? (
                   <ErrorResult message={error} />
+                ) : melody ? (
+                  <MelodyScoreView melody={melody} analysis={analysis} />
                 ) : analysis ? (
                   <AnalysisResultView analysis={analysis} raw={analysis} />
                 ) : (
@@ -309,13 +358,13 @@ function ScorePanel({
   );
 }
 
-function LoadingAnalysis() {
+function LoadingAnalysis({ text }: { text: string }) {
   return (
     <div className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-md bg-graphite">
       <Loader2 className="h-12 w-12 animate-spin text-moss" aria-hidden />
-      <p className="mt-4 text-lg font-semibold text-white">Analyzing...</p>
+      <p className="mt-4 text-lg font-semibold text-white">{text}</p>
       <p className="mt-2 text-sm text-zinc-400">
-        Claude is reading the key, tempo, and chord movement.
+        Claude is reading the score and composing notation-ready adlib notes.
       </p>
     </div>
   );
@@ -329,6 +378,136 @@ function ErrorResult({ message }: { message: string }) {
       <p className="max-w-md text-sm leading-6 text-zinc-400">{message}</p>
     </div>
   );
+}
+
+function MelodyScoreView({
+  melody,
+  analysis
+}: {
+  melody: MelodyResult;
+  analysis: AnalysisResult | null;
+}) {
+  return (
+    <div className="flex h-full min-h-[420px] flex-col gap-4 overflow-auto bg-[#fbfbf3] p-4 text-zinc-950">
+      <div className="flex items-start justify-between gap-3 border-b border-zinc-300 pb-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-fern">
+            Generated Adlib
+          </p>
+          <h3 className="text-2xl font-black tracking-normal">
+            {melody.title ?? "Claude Melody"}
+          </h3>
+          <p className="mt-1 text-sm font-semibold text-zinc-600">
+            Key {melody.key ?? analysis?.key ?? "unknown"} - Tempo{" "}
+            {melody.tempo ?? analysis?.tempo ?? "unknown"}
+          </p>
+        </div>
+        <Sparkles className="h-6 w-6 text-fern" aria-hidden />
+      </div>
+
+      <VexFlowScore melody={melody} />
+
+      <section className="rounded-md border border-zinc-300 bg-zinc-950 p-4 text-zinc-100">
+        <h4 className="mb-3 text-sm font-bold uppercase tracking-[0.16em] text-moss">
+          Melody JSON
+        </h4>
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap text-xs leading-5 text-zinc-300">
+          {JSON.stringify(melody, null, 2)}
+        </pre>
+      </section>
+    </div>
+  );
+}
+
+function VexFlowScore({ melody }: { melody: MelodyResult }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function renderScore() {
+      if (!containerRef.current) return;
+
+      const container = containerRef.current;
+      container.innerHTML = "";
+      setRenderError(null);
+
+      try {
+        const { Formatter, Renderer, Stave, StaveNote, Voice } = await import("vexflow");
+        const notes = melody.notes?.length ? melody.notes : fallbackNotes();
+
+        if (cancelled) return;
+
+        const renderer = new Renderer(container, Renderer.Backends.SVG);
+        renderer.resize(760, 260);
+
+        const context = renderer.getContext();
+        const stave = new Stave(24, 46, 700);
+        stave.addClef("treble").addTimeSignature(melody.timeSignature ?? "4/4");
+        stave.setContext(context).draw();
+
+        const staveNotes = notes.map((note) => {
+          const keys = note.keys?.length ? note.keys : ["c/4"];
+          return new StaveNote({
+            clef: "treble",
+            keys: keys.map(normalizeVexKey),
+            duration: normalizeDuration(note.duration)
+          });
+        });
+
+        const voice = new Voice({ num_beats: 4, beat_value: 4 }).setStrict(false);
+        voice.addTickables(staveNotes);
+
+        new Formatter().joinVoices([voice]).format([voice], 620);
+        voice.draw(context, stave);
+      } catch (error) {
+        console.error("[VexFlowScore] Failed to render melody", error);
+        setRenderError(error instanceof Error ? error.message : "Failed to render melody.");
+      }
+    }
+
+    renderScore();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [melody]);
+
+  return (
+    <section className="rounded-md border border-zinc-300 bg-white p-3">
+      {renderError ? (
+        <div className="flex min-h-[220px] flex-col items-center justify-center gap-2 text-center">
+          <AlertCircle className="h-8 w-8 text-red-500" aria-hidden />
+          <p className="font-bold text-zinc-950">Notation render failed</p>
+          <p className="max-w-md text-sm text-zinc-600">{renderError}</p>
+        </div>
+      ) : null}
+      <div ref={containerRef} className="min-h-[240px] w-full overflow-x-auto" />
+    </section>
+  );
+}
+
+function normalizeVexKey(key: string) {
+  return key.trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function normalizeDuration(duration: string) {
+  if (["8", "q", "h"].includes(duration)) return duration;
+  return "q";
+}
+
+function fallbackNotes(): MelodyNote[] {
+  return [
+    { keys: ["c/4"], duration: "q" },
+    { keys: ["e/4"], duration: "q" },
+    { keys: ["g/4"], duration: "q" },
+    { keys: ["b/4"], duration: "q" },
+    { keys: ["a/4"], duration: "8" },
+    { keys: ["g/4"], duration: "8" },
+    { keys: ["e/4"], duration: "q" },
+    { keys: ["d/4"], duration: "q" }
+  ];
 }
 
 function AnalysisResultView({
