@@ -108,10 +108,10 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({
         model: CLAUDE_MODEL,
-        max_tokens: 700,
+        max_tokens: 1400,
         temperature: 0,
         system:
-          "You are a music theory assistant. Analyze the uploaded sheet music image and return only valid JSON.",
+          "You are a music theory and lead-sheet layout analyst. Analyze the uploaded sheet music image and return only valid JSON. Do not include markdown or explanations.",
         messages: [
           {
             role: "user",
@@ -127,7 +127,7 @@ export async function POST(request: Request) {
               {
                 type: "text",
                 text:
-                  "Analyze this score image. Return only JSON with this exact shape: {\"key\":\"string or unknown\",\"tempo\":\"string or unknown\",\"chordProgression\":[\"chord symbols in order\"],\"confidence\":{\"key\":0-1,\"tempo\":0-1,\"chordProgression\":0-1}}. Do not include markdown."
+                  "Analyze this score image as a lead sheet. Return only JSON with this exact shape: {\"title\":\"string or unknown\",\"composer\":\"string or unknown\",\"key\":\"string or unknown\",\"tempo\":\"string or unknown\",\"timeSignature\":\"4/4 or detected value\",\"totalBars\":number,\"barsPerLine\":number,\"chordProgression\":[\"chord symbols in bar order\"],\"barChords\":[{\"bar\":1,\"chord\":\"Cmaj7\"}],\"sections\":[{\"label\":\"A\",\"startBar\":1,\"endBar\":8}],\"confidence\":{\"key\":0-1,\"tempo\":0-1,\"chordProgression\":0-1,\"layout\":0-1}}. Infer totalBars, barsPerLine, section labels such as A or B in boxes, and title/composer placement from the image. If uncertain, use reasonable lead-sheet defaults. Do not include markdown."
               }
             ]
           }
