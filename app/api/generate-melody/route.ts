@@ -5,10 +5,28 @@ export const runtime = "nodejs";
 const CLAUDE_MODEL = "claude-opus-4-6";
 
 type MelodyRequest = {
+  title?: string;
+  composer?: string;
   key?: string;
   tempo?: string;
+  timeSignature?: string;
+  totalBars?: number;
+  barsPerLine?: number;
   chordProgression?: string[];
+  barChords?: BarChord[];
+  sections?: ScoreSection[];
   style?: string;
+};
+
+type BarChord = {
+  bar: number;
+  chord: string;
+};
+
+type ScoreSection = {
+  label: string;
+  startBar: number;
+  endBar?: number;
 };
 
 type ClaudeTextBlock = {
@@ -22,10 +40,15 @@ type ClaudeResponse = {
 
 type MelodyResponse = {
   title: string;
+  composer: string;
   key: string;
   tempo: string;
   timeSignature: "4/4";
+  totalBars: number;
+  barsPerLine: number;
   chordProgression: string[];
+  barChords: BarChord[];
+  sections: ScoreSection[];
   notes: Array<{
     keys: string[];
     duration: "8" | "q" | "h";
@@ -56,20 +79,31 @@ export async function POST(request: Request) {
     }
 
     const body = (await request.json()) as MelodyRequest;
+    const title = body.title?.trim() || "Untitled";
+    const composer = body.composer?.trim() || "Unknown Composer";
     const key = body.key?.trim() || "C major";
     const tempo = body.tempo?.trim() || "medium swing";
+    const timeSignature = body.timeSignature?.trim() || "4/4";
     const style = body.style?.trim() || "melodic jazz adlib";
+    const totalBars = clampInteger(body.totalBars, 4, 64, 4);
+    const barsPerLine = clampInteger(body.barsPerLine, 1, 8, 4);
     const chordProgression = body.chordProgression?.length
       ? body.chordProgression
       : ["Cmaj7", "Am7", "Dm7", "G7"];
+    const barChords = normalizeBarChords(body.barChords, chordProgression, totalBars);
+    const sections = normalizeSections(body.sections, totalBars);
 
     console.info("[api/generate-melody] Starting Claude melody generation", {
       requestId,
       model: CLAUDE_MODEL,
       key,
       tempo,
+      totalBars,
+      barsPerLine,
       style,
-      chordProgression
+      chordProgression,
+      barChords,
+      sections
     });
 
     const claudeResponse = await fetch("https://api.anthropic.com/v1/messages", {
@@ -96,7 +130,14 @@ export async function POST(request: Request) {
 Inputs:
 - key: ${key}
 - tempo: ${tempo}
+- timeSignature: ${timeSignature}
+- title: ${title}
+- composer: ${composer}
+- totalBars: ${totalBars}
+- barsPerLine: ${barsPerLine}
 - chordProgression: ${JSON.stringify(chordProgression)}
+- barChords: ${JSON.stringify(barChords)}
+- sections: ${JSON.stringify(sections)}
 - style: ${style}
 
 STRICT OUTPUT CONTRACT:
@@ -112,19 +153,25 @@ STRICT OUTPUT CONTRACT:
 Return exactly this JSON schema:
 {
   "title": "string",
+  "composer": "string",
   "key": "string",
   "tempo": "string",
   "timeSignature": "4/4",
+  "totalBars": 16,
+  "barsPerLine": 4,
   "chordProgression": ["Cmaj7", "E7", "A7", "Dm7"],
+  "barChords": [{ "bar": 1, "chord": "Cmaj7" }],
+  "sections": [{ "label": "A", "startBar": 1, "endBar": 8 }],
   "notes": [
     { "keys": ["c/4"], "duration": "q", "chord": "Cmaj7" }
   ]
 }
 
 Rules:
-- Generate exactly 16 notes.
-- The total duration must equal exactly 16 quarter-note beats: four bars of 4/4.
-- Return "chordProgression" as exactly 4 chord symbols, one chord per bar.
+- Preserve title, composer, totalBars, barsPerLine, barChords, and sections exactly from the inputs.
+- Generate enough notes to fill totalBars bars in 4/4.
+- The total duration must equal exactly totalBars * 4 quarter-note beats.
+- Return chordProgression as one chord symbol per bar, matching barChords order.
 - Use VexFlow-compatible note keys like "c/4", "d#/4", "bb/4", "g/5".
 - Use VexFlow-compatible durations only: "8", "q", "h".
 - Every note object must include "keys", "duration", and "chord".
@@ -187,7 +234,17 @@ Rules:
     }
 
     try {
-      const melody = parseMelodyJson(text);
+      const melody = withLayoutDefaults(parseMelodyJson(text), {
+        title,
+        composer,
+        key,
+        tempo,
+        totalBars,
+        barsPerLine,
+        chordProgression,
+        barChords,
+        sections
+      });
 
       console.info("[api/generate-melody] Claude melody generation completed", {
         requestId,
@@ -196,7 +253,17 @@ Rules:
 
       return NextResponse.json(melody);
     } catch (parseError) {
-      const fallback = createFallbackMelody(key, tempo, chordProgression);
+      const fallback = createFallbackMelody({
+        title,
+        composer,
+        key,
+        tempo,
+        totalBars,
+        barsPerLine,
+        chordProgression,
+        barChords,
+        sections
+      });
 
       console.error("[api/generate-melody] Claude returned invalid JSON, using fallback melody", {
         requestId,
@@ -245,39 +312,138 @@ function parseMelodyJson(text: string) {
   }
 }
 
-function createFallbackMelody(
-  key: string,
-  tempo: string,
-  chordProgression: string[]
-): MelodyResponse {
+function createFallbackMelody({
+  title,
+  composer,
+  key,
+  tempo,
+  totalBars,
+  barsPerLine,
+  chordProgression,
+  barChords,
+  sections
+}: {
+  title: string;
+  composer: string;
+  key: string;
+  tempo: string;
+  totalBars: number;
+  barsPerLine: number;
+  chordProgression: string[];
+  barChords: BarChord[];
+  sections: ScoreSection[];
+}): MelodyResponse {
   const chords = chordProgression.length ? chordProgression : ["Cmaj7", "Am7", "Dm7", "G7"];
+  const scale = ["c/4", "d/4", "e/4", "g/4", "a/4", "c/5", "b/4", "g/4"];
+  const notes = Array.from({ length: totalBars * 4 }, (_, index) => {
+    const barIndex = Math.floor(index / 4);
+    const chord = barChords[barIndex]?.chord ?? chords[barIndex % chords.length] ?? "Cmaj7";
+
+    return {
+      keys: [scale[index % scale.length]],
+      duration: "q" as const,
+      chord
+    };
+  });
 
   return {
-    title: "Fallback Adlib Melody",
+    title,
+    composer,
     key,
     tempo,
     timeSignature: "4/4",
-    chordProgression: [chords[0], chords[1] ?? chords[0], chords[2] ?? chords[0], chords[3] ?? chords[0]],
+    totalBars,
+    barsPerLine,
+    chordProgression: Array.from(
+      { length: totalBars },
+      (_, index) => barChords[index]?.chord ?? chords[index % chords.length] ?? "Cmaj7"
+    ),
+    barChords,
+    sections,
     fallback: true,
-    notes: [
-      { keys: ["c/4"], duration: "8", chord: chords[0] },
-      { keys: ["d/4"], duration: "8", chord: chords[0] },
-      { keys: ["e/4"], duration: "q", chord: chords[0] },
-      { keys: ["g/4"], duration: "q", chord: chords[0] },
-      { keys: ["a/4"], duration: "8", chord: chords[1] ?? chords[0] },
-      { keys: ["g/4"], duration: "8", chord: chords[1] ?? chords[0] },
-      { keys: ["e/4"], duration: "q", chord: chords[1] ?? chords[0] },
-      { keys: ["d/4"], duration: "q", chord: chords[1] ?? chords[0] },
-      { keys: ["f/4"], duration: "8", chord: chords[2] ?? chords[0] },
-      { keys: ["a/4"], duration: "8", chord: chords[2] ?? chords[0] },
-      { keys: ["c/5"], duration: "q", chord: chords[2] ?? chords[0] },
-      { keys: ["a/4"], duration: "q", chord: chords[2] ?? chords[0] },
-      { keys: ["b/4"], duration: "8", chord: chords[3] ?? chords[0] },
-      { keys: ["g/4"], duration: "8", chord: chords[3] ?? chords[0] },
-      { keys: ["e/4"], duration: "q", chord: chords[3] ?? chords[0] },
-      { keys: ["c/4"], duration: "q", chord: chords[3] ?? chords[0] }
-    ]
+    notes
   };
+}
+
+function withLayoutDefaults(
+  melody: Partial<MelodyResponse>,
+  defaults: {
+    title: string;
+    composer: string;
+    key: string;
+    tempo: string;
+    totalBars: number;
+    barsPerLine: number;
+    chordProgression: string[];
+    barChords: BarChord[];
+    sections: ScoreSection[];
+  }
+): MelodyResponse {
+  const chordProgression =
+    melody.chordProgression?.length === defaults.totalBars
+      ? melody.chordProgression
+      : defaults.barChords.map((entry) => entry.chord);
+
+  return {
+    title: melody.title ?? defaults.title,
+    composer: melody.composer ?? defaults.composer,
+    key: melody.key ?? defaults.key,
+    tempo: melody.tempo ?? defaults.tempo,
+    timeSignature: "4/4",
+    totalBars: defaults.totalBars,
+    barsPerLine: defaults.barsPerLine,
+    chordProgression,
+    barChords: defaults.barChords,
+    sections: defaults.sections,
+    notes: melody.notes?.length
+      ? melody.notes
+      : createFallbackMelody(defaults).notes,
+    fallback: melody.fallback
+  };
+}
+
+function clampInteger(
+  value: number | undefined,
+  min: number,
+  max: number,
+  fallback: number
+) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value as number)));
+}
+
+function normalizeBarChords(
+  barChords: BarChord[] | undefined,
+  chordProgression: string[],
+  totalBars: number
+) {
+  const chords = chordProgression.length ? chordProgression : ["Cmaj7"];
+  const byBar = new Map(
+    barChords
+      ?.filter((entry) => entry.bar >= 1 && entry.chord)
+      .map((entry) => [entry.bar, entry.chord]) ?? []
+  );
+
+  return Array.from({ length: totalBars }, (_, index) => ({
+    bar: index + 1,
+    chord: byBar.get(index + 1) ?? chords[index % chords.length] ?? "Cmaj7"
+  }));
+}
+
+function normalizeSections(sections: ScoreSection[] | undefined, totalBars: number) {
+  if (!sections?.length) {
+    return [{ label: "A", startBar: 1, endBar: totalBars }];
+  }
+
+  return sections
+    .filter((section) => section.label && section.startBar >= 1)
+    .map((section) => ({
+      label: section.label,
+      startBar: Math.min(totalBars, Math.max(1, Math.round(section.startBar))),
+      endBar: section.endBar
+        ? Math.min(totalBars, Math.max(1, Math.round(section.endBar)))
+        : undefined
+    }));
 }
 
 export {};
