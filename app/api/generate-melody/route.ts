@@ -20,6 +20,19 @@ type ClaudeResponse = {
   content?: ClaudeTextBlock[];
 };
 
+type MelodyResponse = {
+  title: string;
+  key: string;
+  tempo: string;
+  timeSignature: "4/4";
+  notes: Array<{
+    keys: string[];
+    duration: "8" | "q" | "h";
+    chord: string;
+  }>;
+  fallback?: boolean;
+};
+
 export async function POST(request: Request) {
   const requestId = crypto.randomUUID();
 
@@ -70,7 +83,7 @@ export async function POST(request: Request) {
         max_tokens: 1200,
         temperature: 0.7,
         system:
-          "You are a jazz composer and VexFlow notation assistant. Return only valid JSON.",
+          "You are a JSON API that composes short jazz adlib melodies for VexFlow. You must return exactly one valid JSON object and nothing else. Do not use markdown, code fences, explanations, comments, trailing commas, or prose before or after the JSON.",
         messages: [
           {
             role: "user",
@@ -84,125 +97,3 @@ Inputs:
 - tempo: ${tempo}
 - chordProgression: ${JSON.stringify(chordProgression)}
 - style: ${style}
-
-Return only JSON with this exact shape:
-{
-  "title": "string",
-  "key": "string",
-  "tempo": "string",
-  "timeSignature": "4/4",
-  "notes": [
-    { "keys": ["c/4"], "duration": "q", "chord": "Cmaj7" }
-  ]
-}
-
-Rules:
-- Generate exactly 16 notes.
-- Use VexFlow-compatible note keys like "c/4", "d#/4", "bb/4", "g/5".
-- Use VexFlow-compatible durations only: "8", "q", "h".
-- Prefer mostly eighth notes and quarter notes.
-- Keep notes readable on treble clef between c/4 and c/6.
-- Reflect the requested style in contour and rhythm.
-- Do not include markdown, comments, or text outside JSON.`
-              }
-            ]
-          }
-        ]
-      })
-    });
-
-    if (!claudeResponse.ok) {
-      const detail = await claudeResponse.text();
-
-      console.error("[api/generate-melody] Claude API request failed", {
-        requestId,
-        model: CLAUDE_MODEL,
-        status: claudeResponse.status,
-        statusText: claudeResponse.statusText,
-        anthropicRequestId: claudeResponse.headers.get("request-id"),
-        detail
-      });
-
-      return NextResponse.json(
-        {
-          error: "Claude melody generation failed.",
-          requestId,
-          model: CLAUDE_MODEL,
-          status: claudeResponse.status,
-          statusText: claudeResponse.statusText,
-          anthropicRequestId: claudeResponse.headers.get("request-id"),
-          detail
-        },
-        { status: claudeResponse.status }
-      );
-    }
-
-    const payload = (await claudeResponse.json()) as ClaudeResponse;
-    const text = payload.content?.find((block) => block.type === "text")?.text;
-
-    if (!text) {
-      console.error("[api/generate-melody] Claude returned no text content", {
-        requestId,
-        model: CLAUDE_MODEL,
-        payload
-      });
-
-      return NextResponse.json(
-        {
-          error: "Claude did not return a melody result.",
-          requestId,
-          payload
-        },
-        { status: 502 }
-      );
-    }
-
-    try {
-      const melody = JSON.parse(text);
-
-      console.info("[api/generate-melody] Claude melody generation completed", {
-        requestId,
-        model: CLAUDE_MODEL
-      });
-
-      return NextResponse.json(melody);
-    } catch (parseError) {
-      console.error("[api/generate-melody] Claude returned invalid JSON", {
-        requestId,
-        model: CLAUDE_MODEL,
-        parseError,
-        raw: text
-      });
-
-      return NextResponse.json(
-        {
-          error: "Claude returned invalid melody JSON.",
-          requestId,
-          raw: text
-        },
-        { status: 502 }
-      );
-    }
-  } catch (error) {
-    console.error("[api/generate-melody] Unexpected server error", {
-      requestId,
-      model: CLAUDE_MODEL,
-      error
-    });
-
-    return NextResponse.json(
-      {
-        error: "Unexpected server error while generating melody.",
-        requestId,
-        message: error instanceof Error ? error.message : String(error),
-        stack:
-          process.env.NODE_ENV === "development" && error instanceof Error
-            ? error.stack
-            : undefined
-      },
-      { status: 500 }
-    );
-  }
-}
-
-export {};
