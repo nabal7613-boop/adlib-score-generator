@@ -1,311 +1,790 @@
-import { NextResponse } from "next/server";
+"use client";
 
-export const runtime = "nodejs";
+import {
+  AlertCircle,
+  FileAudio,
+  Loader2,
+  Music2,
+  Play,
+  Sparkles,
+  UploadCloud,
+  Wand2,
+  X
+} from "lucide-react";
+import { DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
-type BarChord = { bar: number; chord: string; };
-type ScoreSection = { label: string; startBar: number; endBar?: number; };
-type NoteEntry = { keys: string[]; duration: "8" | "q" | "h" | "w" | "8r" | "qr" | "hr"; chord: string; };
-type MelodyResponse = {
-  title: string; composer: string; key: string; tempo: string;
-  timeSignature: string; totalBars: number; barsPerLine: number;
-  chordProgression: string[]; barChords: BarChord[]; sections: ScoreSection[];
-  notes: NoteEntry[]; fallback?: boolean;
+type UploadedScore = {
+  file: File;
+  url: string;
+  kind: "image" | "pdf";
 };
 
-// ============================================================
-// 🎵 음악이론 기반 코드 파서
-// ============================================================
-const NOTE_TO_SEMI: Record<string, number> = {
-  'C':0,'C#':1,'Db':1,'D':2,'D#':3,'Eb':3,'E':4,'F':5,
-  'F#':6,'Gb':6,'G':7,'G#':8,'Ab':8,'A':9,'A#':10,'Bb':10,'B':11
-};
-const SEMI_TO_NOTE = ['c','db','d','eb','e','f','gb','g','ab','a','bb','b'];
-
-const QUALITY_INTERVALS: Record<string, number[]> = {
-  'maj7':[0,4,7,11],'maj9':[0,4,7,11,14],'maj':[0,4,7],'6':[0,4,7,9],
-  'm7':[0,3,7,10],'m9':[0,3,7,10,14],'m':[0,3,7],'m6':[0,3,7,9],
-  '7':[0,4,7,10],'9':[0,4,7,10,14],'7b9':[0,4,7,10,13],
-  '7#9':[0,4,7,10,15],'7b5':[0,4,6,10],'7#5':[0,4,8,10],
-  'm7b5':[0,3,6,10],'dim7':[0,3,6,9],'dim':[0,3,6],
-  'aug':[0,4,8],'sus4':[0,5,7,10],'sus2':[0,2,7,10],
-};
-const PASSING_INTERVALS: Record<string, number[]> = {
-  'maj7':[2,9],'maj9':[2,9],'maj':[2,9],'6':[2,9],
-  'm7':[2,5],'m9':[2,5],'m':[2,5],'m6':[2,5],
-  '7':[2,9],'9':[2],'7b9':[2],'7#9':[2],
-  'm7b5':[2,5],'dim7':[2,5],'dim':[2,5],
+type AnalysisResult = {
+  title?: string;
+  composer?: string;
+  key?: string;
+  tempo?: string;
+  timeSignature?: string;
+  totalBars?: number;
+  barsPerLine?: number;
+  chordProgression?: string[];
+  barChords?: BarChord[];
+  sections?: ScoreSection[];
+  confidence?: {
+    key?: number;
+    tempo?: number;
+    chordProgression?: number;
+    layout?: number;
+  };
 };
 
-function parseRoot(chord: string): { root: string; rest: string } {
-  const m = chord.match(/^([A-G][b#]?)/);
-  return m ? { root: m[1], rest: chord.slice(m[1].length) } : { root: 'C', rest: chord };
-}
+type BarChord = {
+  bar: number;
+  chord: string;
+};
 
-function parseQuality(rest: string): string {
-  const r = rest.trim()
-    .replace(/△|Δ/g,'maj').replace(/ø/g,'m7b5')
-    .replace(/°/g,'dim').replace(/\+/g,'aug');
-  const checks: [RegExp, string][] = [
-    [/m7b5|m7\(b5\)|-7b5/,'m7b5'],
-    [/maj9|M9/,'maj9'],[/maj7|M7/,'maj7'],[/maj|M(?=[^a-z]|$)/,'maj'],
-    [/m9|-9|min9/,'m9'],[/m7|-7|min7/,'m7'],[/m6|-6|min6/,'m6'],
-    [/dim7|o7|07/,'dim7'],[/dim|o(?=[^a-z]|$)/,'dim'],
-    [/m(?=[^a])|(?:^|(?<=[0-9]))[-]|min(?!7)/,'m'],
-    [/aug/,'aug'],[/7b9/,'7b9'],[/7#9/,'7#9'],[/7b5|\(b5\)/,'7b5'],[/7#5/,'7#5'],
-    [/sus4/,'sus4'],[/sus2/,'sus2'],
-    [/^9/,'9'],[/^7/,'7'],[/^6/,'6'],[/^$/,'maj'],
-  ];
-  for (const [p,q] of checks) if (p.test(r)) return q;
-  return 'maj7';
-}
+type ScoreSection = {
+  label: string;
+  startBar: number;
+  endBar?: number;
+};
 
-function buildChordPalette(chord: string): { ct: string[]; ps: string[] } {
-  const { root, rest } = parseRoot(chord);
-  const quality = parseQuality(rest);
-  const rootSemi = NOTE_TO_SEMI[root] ?? 0;
-  const intervals = QUALITY_INTERVALS[quality] ?? QUALITY_INTERVALS['maj7'];
-  const passingInts = PASSING_INTERVALS[quality] ?? [2, 5];
+// ✅ 수정 1: 쉼표 duration 타입 추가
+type MelodyNote = {
+  keys: string[];
+  duration: "8" | "q" | "h" | "w" | "8r" | "qr" | "hr" | string;
+  chord?: string;
+};
 
-  const toKey = (i: number) => {
-    const total = rootSemi + i;
-    return `${SEMI_TO_NOTE[total % 12]}/${total >= 12 ? 5 : 4}`;
+type MelodyResult = {
+  title?: string;
+  composer?: string;
+  key?: string;
+  tempo?: string;
+  timeSignature?: string;
+  totalBars?: number;
+  barsPerLine?: number;
+  chordProgression?: string[];
+  barChords?: BarChord[];
+  sections?: ScoreSection[];
+  notes?: MelodyNote[];
+  fallback?: boolean;
+};
+
+const sampleBars = [
+  "M7 9 13",
+  "Dm7 G7alt",
+  "Cmaj7 #11",
+  "Chromatic run",
+  "Blue note fall",
+  "Triplet pickup",
+  "Upper structure",
+  "Resolve"
+];
+
+export default function Home() {
+  const [score, setScore] = useState<UploadedScore | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [style, setStyle] = useState("Jazz ballad, warm voicings, saxophone adlib");
+  const [hasGenerated, setHasGenerated] = useState(false);
+  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [melody, setMelody] = useState<MelodyResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loadingText, setLoadingText] = useState("Analyzing...");
+
+  const fileMeta = useMemo(() => {
+    if (!score) return null;
+    const sizeInMb = score.file.size / 1024 / 1024;
+    return `${score.file.name} - ${sizeInMb.toFixed(sizeInMb > 1 ? 1 : 2)}MB`;
+  }, [score]);
+
+  const handleFiles = (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+
+    const isPdf = file.type === "application/pdf";
+    const isImage = file.type.startsWith("image/");
+
+    if (!isPdf && !isImage) {
+      setError("Please upload an image or PDF score.");
+      return;
+    }
+
+    setScore((current) => {
+      if (current) URL.revokeObjectURL(current.url);
+      return { file, url: URL.createObjectURL(file), kind: isPdf ? "pdf" : "image" };
+    });
+    setHasGenerated(false);
+    setAnalysis(null);
+    setMelody(null);
+    setError(null);
   };
 
-  return { ct: intervals.slice(0, 4).map(toKey), ps: passingInts.map(toKey) };
+  const handleDrop = (event: DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    setIsDragging(false);
+    handleFiles(event.dataTransfer.files);
+  };
+
+  const generateAdlib = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!score || isAnalyzing) return;
+
+    if (score.kind !== "image") {
+      setError("Claude analysis currently supports image files. Please upload a score image.");
+      setAnalysis(null);
+      setMelody(null);
+      setHasGenerated(false);
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("score", score.file);
+    formData.append("style", style);
+
+    setError(null);
+    setAnalysis(null);
+    setMelody(null);
+    setHasGenerated(false);
+    setLoadingText("Analyzing score...");
+    setIsAnalyzing(true);
+
+    try {
+      const analysisResponse = await fetch("/api/analyze", {
+        method: "POST",
+        body: formData
+      });
+
+      const analysisData = (await analysisResponse.json()) as AnalysisResult & { error?: string };
+
+      if (!analysisResponse.ok) {
+        throw new Error(analysisData.error ?? "Score analysis failed.");
+      }
+
+      setAnalysis(analysisData);
+      setLoadingText("Generating adlib melody...");
+
+      const melodyResponse = await fetch("/api/generate-melody", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: analysisData.title,
+          composer: analysisData.composer,
+          key: analysisData.key,
+          tempo: analysisData.tempo,
+          timeSignature: analysisData.timeSignature,
+          totalBars: analysisData.totalBars,
+          barsPerLine: analysisData.barsPerLine,
+          chordProgression: analysisData.chordProgression,
+          barChords: analysisData.barChords,
+          sections: analysisData.sections,
+          style
+        })
+      });
+
+      const melodyData = (await melodyResponse.json()) as MelodyResult & { error?: string };
+
+      if (!melodyResponse.ok) {
+        throw new Error(melodyData.error ?? "Melody generation failed.");
+      }
+
+      setMelody(melodyData);
+      setHasGenerated(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Score analysis failed.");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const removeScore = () => {
+    if (score) URL.revokeObjectURL(score.url);
+    setScore(null);
+    setIsAnalyzing(false);
+    setHasGenerated(false);
+    setAnalysis(null);
+    setMelody(null);
+    setError(null);
+  };
+
+  return (
+    <main className="min-h-screen px-4 py-5 text-zinc-100 sm:px-6 lg:px-8">
+      <div className="mx-auto flex min-h-[calc(100vh-2.5rem)] w-full max-w-7xl flex-col gap-5">
+        <header className="flex flex-col gap-4 rounded-lg border border-line bg-white/[0.04] px-4 py-4 backdrop-blur md:flex-row md:items-center md:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="grid h-11 w-11 place-items-center rounded-lg bg-moss text-ink shadow-glow">
+              <Music2 className="h-6 w-6" aria-hidden />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold tracking-normal text-white sm:text-2xl">
+                Adlib Score Generator
+              </h1>
+              <p className="text-sm text-zinc-400">
+                Upload a score image, analyze it with Claude, and shape a new adlib idea.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 rounded-full border border-line bg-black/30 px-3 py-2 text-sm text-zinc-300">
+            <span className="h-2 w-2 rounded-full bg-moss shadow-[0_0_16px_rgba(30,215,96,0.8)]" />
+            Claude ready
+          </div>
+        </header>
+
+        {!score ? (
+          <section className="grid flex-1 place-items-center rounded-lg border border-line bg-black/35 p-4 shadow-glow">
+            <label
+              onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={handleDrop}
+              className={`flex min-h-[420px] w-full cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed p-6 text-center transition sm:min-h-[520px] ${
+                isDragging
+                  ? "border-moss bg-moss/10"
+                  : "border-white/20 bg-white/[0.03] hover:border-moss/70 hover:bg-white/[0.05]"
+              }`}
+            >
+              <input
+                className="sr-only"
+                type="file"
+                accept="image/*,application/pdf"
+                onChange={(event) => handleFiles(event.target.files)}
+              />
+              <UploadCloud className="mb-5 h-14 w-14 text-moss" aria-hidden />
+              <span className="text-2xl font-bold text-white sm:text-4xl">
+                Upload score image or PDF
+              </span>
+              <span className="mt-3 max-w-lg text-sm leading-6 text-zinc-400 sm:text-base">
+                Drag and drop a file here, or click to choose one. Image files can be sent
+                to Claude for key, tempo, and chord progression analysis.
+              </span>
+              <span className="mt-6 inline-flex items-center gap-2 rounded-full bg-moss px-5 py-3 text-sm font-bold text-ink">
+                <FileAudio className="h-4 w-4" aria-hidden />
+                Choose score
+              </span>
+            </label>
+          </section>
+        ) : (
+          <>
+            <section className="grid flex-1 grid-cols-1 gap-5 lg:grid-cols-2">
+              <ScorePanel title="Original score" meta={fileMeta} action={removeScore} actionLabel="Remove upload">
+                {score.kind === "pdf" ? (
+                  <iframe title="Original PDF score" src={score.url} className="h-full min-h-[420px] w-full rounded-md border-0 bg-zinc-950" />
+                ) : (
+                  <img src={score.url} alt="Uploaded original score" className="h-full min-h-[420px] w-full rounded-md object-contain" />
+                )}
+              </ScorePanel>
+
+              <ScorePanel title="Claude analysis" meta={style}>
+                {isAnalyzing ? (
+                  <LoadingAnalysis text={loadingText} />
+                ) : error ? (
+                  <ErrorResult message={error} />
+                ) : melody ? (
+                  <MelodyScoreView melody={melody} analysis={analysis} />
+                ) : analysis ? (
+                  <AnalysisResultView analysis={analysis} raw={analysis} />
+                ) : (
+                  <AdlibPreview hasGenerated={hasGenerated} />
+                )}
+              </ScorePanel>
+            </section>
+
+            <form onSubmit={generateAdlib} className="rounded-lg border border-line bg-white/[0.05] p-3 backdrop-blur">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center">
+                <div className="flex min-w-0 flex-1 items-center gap-3 rounded-lg border border-line bg-black/35 px-4 py-3">
+                  <Wand2 className="h-5 w-5 shrink-0 text-moss" aria-hidden />
+                  <input
+                    value={style}
+                    onChange={(event) => setStyle(event.target.value)}
+                    className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-zinc-500 sm:text-base"
+                    placeholder="예: 마일스 데이비스 느낌으로, 비밥 스타일로, 발라드 감성으로"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={isAnalyzing}
+                  className="inline-flex h-12 items-center justify-center gap-2 rounded-lg bg-moss px-5 text-sm font-bold text-ink transition hover:bg-[#22ef6c] disabled:cursor-not-allowed disabled:bg-zinc-600 disabled:text-zinc-300"
+                >
+                  {isAnalyzing ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                  ) : (
+                    <Play className="h-4 w-4 fill-current" aria-hidden />
+                  )}
+                  Generate
+                </button>
+              </div>
+            </form>
+          </>
+        )}
+      </div>
+    </main>
+  );
 }
 
-// ============================================================
-// 🎨 스타일 감지
-// ============================================================
-type StyleType = "miles" | "bebop" | "ballad" | "gospel" | "jazz";
-
-function detectStyle(style: string): StyleType {
-  const s = style.toLowerCase();
-  if (s.includes("마일스") || s.includes("miles") || s.includes("cool")) return "miles";
-  if (s.includes("비밥") || s.includes("bebop")) return "bebop";
-  if (s.includes("발라드") || s.includes("ballad") || s.includes("slow")) return "ballad";
-  if (s.includes("가스펠") || s.includes("gospel") || s.includes("소울") || s.includes("soul")) return "gospel";
-  return "jazz";
+function ScorePanel({ title, meta, action, actionLabel, children }: {
+  title: string; meta?: string | null; action?: () => void; actionLabel?: string; children: React.ReactNode;
+}) {
+  return (
+    <article className="flex min-h-[520px] flex-col rounded-lg border border-line bg-black/40 p-3 shadow-[0_18px_80px_rgba(0,0,0,0.35)]">
+      <div className="mb-3 flex items-center justify-between gap-3 px-1">
+        <div className="min-w-0">
+          <h2 className="text-base font-bold text-white">{title}</h2>
+          {meta ? <p className="truncate text-xs text-zinc-500 sm:text-sm">{meta}</p> : null}
+        </div>
+        {action ? (
+          <button type="button" onClick={action} aria-label={actionLabel} title={actionLabel}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-line text-zinc-300 transition hover:border-moss/70 hover:text-white">
+            <X className="h-4 w-4" aria-hidden />
+          </button>
+        ) : null}
+      </div>
+      <div className="relative flex-1 overflow-hidden rounded-md border border-line bg-zinc-950/80">
+        {children}
+      </div>
+    </article>
+  );
 }
 
-// ============================================================
-// 🎼 박자별 음표 길이 정의
-// ============================================================
-function getTimeSigBeats(timeSig: string): { beats: number; value: number } {
-  const m = timeSig.match(/^(\d+)\/(\d+)$/);
-  if (!m) return { beats: 4, value: 4 };
-  return { beats: parseInt(m[1]), value: parseInt(m[2]) };
+function LoadingAnalysis({ text }: { text: string }) {
+  return (
+    <div className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-md bg-graphite">
+      <Loader2 className="h-12 w-12 animate-spin text-moss" aria-hidden />
+      <p className="mt-4 text-lg font-semibold text-white">{text}</p>
+      <p className="mt-2 text-sm text-zinc-400">Claude is reading the score and composing adlib notes.</p>
+    </div>
+  );
 }
 
-// 박자에 맞는 총 비트 수 (8분음표 기준)
-function getBarBeatsIn8th(timeSig: string): number {
-  const { beats, value } = getTimeSigBeats(timeSig);
-  return beats * (8 / value); // 8분음표 단위
+function ErrorResult({ message }: { message: string }) {
+  return (
+    <div className="flex h-full min-h-[420px] flex-col items-center justify-center gap-3 rounded-md bg-graphite p-6 text-center">
+      <AlertCircle className="h-10 w-10 text-red-400" aria-hidden />
+      <p className="text-lg font-semibold text-white">Analysis failed</p>
+      <p className="max-w-md text-sm leading-6 text-zinc-400">{message}</p>
+    </div>
+  );
 }
 
-// ============================================================
-// 🎵 코드+스타일+박자 기반 음표 생성
-// ============================================================
-function buildBarNotes(chord: string, barIndex: number, styleType: StyleType, timeSig: string): NoteEntry[] {
-  const { ct, ps } = buildChordPalette(chord);
-  const c0 = ct[0] ?? 'c/4';
-  const c1 = ct[1] ?? ct[0] ?? 'e/4';
-  const c2 = ct[2] ?? ct[0] ?? 'g/4';
-  const c3 = ct[3] ?? ct[1] ?? 'b/4';
-  const p0 = ps[0] ?? 'd/4';
-  const p1 = ps[1] ?? 'a/4';
+function MelodyScoreView({ melody, analysis }: { melody: MelodyResult; analysis: AnalysisResult | null }) {
+  return (
+    <div className="flex h-full min-h-[420px] flex-col gap-4 overflow-auto bg-[#fbfbf3] p-4 text-zinc-950">
+      <div className="flex items-start justify-between gap-3 border-b border-zinc-300 pb-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-fern">Layout matched adlib</p>
+          <h3 className="text-2xl font-black tracking-normal">{melody.title ?? analysis?.title ?? "Claude Melody"}</h3>
+          <p className="mt-1 text-sm font-semibold text-zinc-600">
+            Key {melody.key ?? analysis?.key ?? "unknown"} - Tempo {melody.tempo ?? analysis?.tempo ?? "unknown"}
+            {melody.fallback && <span className="ml-2 text-xs text-amber-600">(fallback)</span>}
+          </p>
+        </div>
+        <Sparkles className="h-6 w-6 text-fern" aria-hidden />
+      </div>
+      <VexFlowScore melody={melody} analysis={analysis} />
+      <section className="rounded-md border border-zinc-300 bg-zinc-950 p-4 text-zinc-100">
+        <h4 className="mb-3 text-sm font-bold uppercase tracking-[0.16em] text-moss">Melody JSON</h4>
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap text-xs leading-5 text-zinc-300">
+          {JSON.stringify(melody, null, 2)}
+        </pre>
+      </section>
+    </div>
+  );
+}
 
-  const R = (d: "qr"|"hr"|"8r"): NoteEntry => ({ keys:["b/4"], duration:d, chord });
-  const N = (k: string, d: "8"|"q"|"h"): NoteEntry => ({ keys:[k], duration:d, chord });
+function VexFlowScore({ melody, analysis }: { melody: MelodyResult; analysis: AnalysisResult | null }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
 
-  // 6/8박자용 패턴 (6개 8분음표 = 2그룹 × 3)
-  const patterns68: NoteEntry[][] = [
-    [N(c0,"8"),N(p0,"8"),N(c1,"8"),N(c2,"8"),N(p1,"8"),N(c1,"8")],
-    [N(c1,"q"),N(c0,"8"),N(c2,"q"),N(c1,"8")],
-    [N(c0,"8"),N(c1,"8"),N(c2,"8"),R("8r"),N(c1,"8"),N(c0,"8")],
-    [N(c2,"q"),N(p0,"8"),N(c1,"q"),N(c0,"8")],
-    [R("8r"),N(c0,"8"),N(c1,"8"),N(c2,"q"),N(c1,"8")],
-    [N(c1,"8"),N(c2,"8"),N(c1,"8"),N(c0,"q"),N(p0,"8")],
-    [N(c0,"q"),N(c1,"8"),R("8r"),N(c2,"8"),N(c1,"8")],
-    [N(c2,"8"),N(c1,"8"),N(c0,"8"),N(p0,"8"),N(c1,"8"),N(c2,"8")],
-  ];
+  useEffect(() => {
+    let cancelled = false;
 
-  // 3/4박자용 패턴 (3박)
-  const patterns34: NoteEntry[][] = [
-    [N(c0,"q"), N(c1,"q"), N(c2,"q")],
-    [N(c1,"h"), N(c0,"q")],
-    [R("qr"), N(c1,"q"), N(c2,"q")],
-    [N(c2,"q"), N(c1,"h")],
-    [N(c0,"8"),N(p0,"8"),N(c1,"q"),N(c2,"q")],
-    [N(c1,"q"), R("qr"), N(c0,"q")],
-    [N(c2,"q"), N(c0,"q"), N(c1,"q")],
-    [R("qr"), N(c2,"h")],
-  ];
+    async function renderScore() {
+      if (!containerRef.current) return;
+      const container = containerRef.current;
+      container.innerHTML = "";
+      setRenderError(null);
 
-  // 4/4박자 스타일별 패턴
-  const miles: NoteEntry[][] = [
-    [N(c1,"h"),R("hr")],[R("qr"),N(c0,"h"),R("qr")],
-    [N(c2,"h"),R("qr"),N(c0,"q")],[R("hr"),N(c1,"q"),N(c0,"q")],
-    [N(c0,"q"),R("hr"),N(c2,"q")],[R("qr"),N(c2,"h"),R("qr")],
-    [N(c1,"h"),R("qr"),N(c2,"q")],[R("hr"),N(c0,"h")],
-    [N(c3,"h"),R("hr")],[R("qr"),N(c1,"h"),R("qr")],
-    [N(c0,"q"),R("qr"),N(c1,"h")],[R("hr"),N(c2,"h")],
-    [N(c2,"q"),R("hr"),N(c0,"q")],[R("qr"),N(c3,"h"),R("qr")],
-    [N(c1,"q"),N(c0,"h"),R("qr")],[R("hr"),N(c1,"q"),N(c2,"q")],
-  ];
+      try {
+        const { Annotation, Barline, Formatter, Renderer, Stave, StaveNote, Voice } = await import("vexflow");
+        const notes = melody.notes?.length ? melody.notes : fallbackNotes();
+        const totalBars = clampLayoutNumber(melody.totalBars ?? analysis?.totalBars, 4, 64, 4);
+        const barsPerLine = clampLayoutNumber(melody.barsPerLine ?? analysis?.barsPerLine, 1, 8, 4);
+        const chordProgression = melody.chordProgression ?? analysis?.chordProgression ?? undefined;
+        const barChords = melody.barChords ?? analysis?.barChords;
+        const sections = melody.sections ?? analysis?.sections ?? [{ label: "A", startBar: 1 }];
+        const measures = splitIntoMeasures(notes, { chordProgression, barChords, totalBars });
 
-  const bebop: NoteEntry[][] = [
-    [N(c0,"8"),N(p0,"8"),N(c1,"8"),N(p1,"8"),N(c2,"8"),N(p0,"8"),N(c1,"8"),N(c0,"8")],
-    [N(c1,"8"),N(c2,"8"),N(p0,"8"),N(c3,"8"),N(c2,"8"),N(c1,"8"),N(p1,"8"),N(c0,"8")],
-    [N(c2,"8"),N(p1,"8"),N(c1,"8"),N(c0,"8"),N(p0,"8"),N(c1,"8"),N(c2,"q")],
-    [N(c0,"8"),N(c1,"8"),N(c2,"8"),N(c3,"8"),N(c2,"8"),N(p0,"8"),N(c1,"q")],
-    [N(p0,"8"),N(c0,"8"),N(c1,"8"),N(c2,"8"),N(c1,"8"),N(c0,"8"),N(p1,"q")],
-    [N(c3,"8"),N(c2,"8"),N(c1,"8"),N(p0,"8"),N(c0,"8"),N(p1,"8"),N(c2,"q")],
-    [N(c1,"q"),N(c2,"8"),N(c3,"8"),N(c2,"8"),N(c1,"8"),N(p0,"8"),N(c0,"8")],
-    [N(c0,"8"),N(p1,"8"),N(c1,"8"),N(c2,"8"),N(p0,"8"),N(c3,"8"),N(c2,"q")],
-    [N(c2,"8"),N(c3,"8"),N(p0,"8"),N(c1,"8"),N(c0,"8"),N(p1,"8"),N(c1,"q")],
-    [N(p1,"8"),N(c2,"8"),N(c1,"8"),N(c0,"8"),N(p0,"8"),N(c2,"8"),N(c3,"q")],
-    [N(c1,"8"),N(p0,"8"),N(c2,"8"),N(c1,"8"),N(c0,"8"),N(p1,"8"),N(c1,"q")],
-    [N(c3,"8"),N(p1,"8"),N(c2,"8"),N(c0,"8"),N(c1,"8"),N(p0,"8"),N(c2,"q")],
-    [N(c0,"q"),N(c1,"8"),N(c2,"8"),N(c3,"8"),N(c2,"8"),N(c1,"8"),N(p0,"8")],
-    [N(c2,"8"),N(c1,"8"),N(p0,"8"),N(c0,"8"),N(p1,"8"),N(c1,"8"),N(c2,"q")],
-    [N(p0,"8"),N(p1,"8"),N(c0,"8"),N(c1,"8"),N(c2,"8"),N(c3,"8"),N(c2,"q")],
-    [N(c1,"8"),N(c2,"8"),N(c3,"8"),N(p0,"8"),N(c2,"8"),N(c1,"8"),N(c0,"q")],
-  ];
+        if (cancelled) return;
 
-  const ballad: NoteEntry[][] = [
-    [N(c1,"h"),N(c0,"h")],[N(c2,"h"),R("hr")],
-    [R("qr"),N(c0,"h"),R("qr")],[N(c1,"h"),R("qr"),N(c2,"q")],
-    [N(c0,"q"),N(c1,"h"),R("qr")],[R("hr"),N(c2,"h")],
-    [N(c3,"h"),R("qr"),N(c0,"q")],[N(c0,"h"),N(c2,"h")],
-    [R("qr"),N(c1,"h"),N(c0,"q")],[N(c2,"h"),N(c1,"h")],
-    [N(c0,"h"),R("qr"),N(c3,"q")],[R("hr"),N(c1,"h")],
-    [N(c1,"q"),N(c2,"h"),R("qr")],[N(c3,"h"),N(c1,"h")],
-    [R("qr"),N(c2,"h"),N(c0,"q")],[N(c0,"h"),R("hr")],
-  ];
+        const renderer = new Renderer(container, Renderer.Backends.SVG);
+        const measureWidth = 168;
+        const left = 26;
+        const scoreTop = 108;
+        const lineHeight = 122;
+        const lineCount = Math.ceil(measures.length / barsPerLine);
+        const width = Math.max(760, left * 2 + barsPerLine * measureWidth);
+        const height = Math.max(320, scoreTop + lineCount * lineHeight + 36);
+        renderer.resize(width, height);
 
-  const gospel: NoteEntry[][] = [
-    [N(c0,"q"),N(c1,"8"),N(c2,"8"),N(c1,"q"),N(c0,"q")],
-    [R("qr"),N(c1,"q"),N(c2,"8"),N(c1,"8"),N(c0,"q")],
-    [N(c0,"8"),N(c1,"8"),N(c2,"q"),N(c1,"8"),N(c0,"8"),R("qr")],
-    [N(c2,"q"),R("qr"),N(c1,"q"),N(c0,"q")],
-    [N(c0,"q"),N(c2,"8"),N(c1,"8"),R("qr"),N(c0,"q")],
-    [R("qr"),N(c2,"q"),N(c1,"8"),N(c0,"8"),R("qr")],
-    [N(c1,"8"),N(c2,"8"),N(c1,"q"),R("qr"),N(c0,"q")],
-    [N(c0,"q"),R("qr"),N(c2,"q"),N(c1,"q")],
-    [N(c1,"q"),N(c0,"8"),N(c1,"8"),N(c2,"q"),R("qr")],
-    [R("qr"),N(c0,"q"),N(c1,"8"),N(c2,"8"),R("qr")],
-    [N(c2,"8"),N(c1,"8"),R("qr"),N(c0,"q"),N(c1,"q")],
-    [N(c0,"q"),N(c2,"q"),R("qr"),N(c1,"q")],
-    [R("qr"),N(c1,"8"),N(c2,"8"),N(c1,"q"),N(c0,"q")],
-    [N(c1,"q"),R("qr"),N(c2,"8"),N(c1,"8"),R("qr")],
-    [N(c0,"8"),N(p0,"8"),N(c1,"q"),N(c2,"8"),N(c1,"8"),R("qr")],
-    [R("qr"),N(c2,"q"),N(c0,"8"),N(c1,"8"),R("qr")],
-  ];
+        const context = renderer.getContext();
 
-  const jazz: NoteEntry[][] = [
-    [N(c0,"q"),N(p0,"8"),N(c1,"8"),N(c2,"h")],
-    [R("qr"),N(c1,"q"),N(c2,"8"),N(p0,"8"),N(c0,"q")],
-    [N(c2,"8"),N(c1,"8"),R("qr"),N(c0,"h")],
-    [N(c1,"h"),N(p0,"8"),N(c2,"8"),R("qr")],
-    [R("hr"),N(c0,"8"),N(c1,"8"),N(c2,"q")],
-    [N(c0,"8"),N(p1,"8"),N(c1,"q"),N(c2,"h")],
-    [N(c2,"q"),R("qr"),N(c0,"8"),N(c1,"8"),R("qr")],
-    [N(c1,"8"),N(c2,"8"),N(c1,"8"),N(c0,"8"),N(p0,"h")],
-    [N(c0,"h"),R("qr"),N(c2,"q")],
-    [R("qr"),N(c2,"8"),N(p0,"8"),N(c1,"h")],
-    [N(c1,"q"),N(c0,"8"),N(p1,"8"),R("hr")],
-    [N(c2,"8"),N(c3,"8"),R("qr"),N(c1,"h")],
-    [R("qr"),N(c0,"q"),N(c2,"8"),N(c1,"8"),R("qr")],
-    [N(c3,"h"),N(p0,"8"),N(c1,"8"),R("qr")],
-    [N(c0,"8"),N(c1,"8"),N(c2,"q"),R("hr")],
-    [R("hr"),N(c1,"q"),N(c0,"q")],
-  ];
+        measures.forEach((measure, measureIndex) => {
+          const lineIndex = Math.floor(measureIndex / barsPerLine);
+          const lineBarIndex = measureIndex % barsPerLine;
+          const x = left + lineBarIndex * measureWidth;
+          const y = scoreTop + lineIndex * lineHeight;
+          const stave = new Stave(x, y, measureWidth);
 
-  // 박자에 따라 패턴 선택
-  const sig = timeSig.trim();
-  let patterns: NoteEntry[][];
-  if (sig === "6/8") {
-    patterns = patterns68;
-  } else if (sig === "3/4") {
-    patterns = patterns34;
-  } else {
-    const map = { miles, bebop, ballad, gospel, jazz };
-    patterns = map[styleType];
+          if (lineBarIndex === 0) {
+            const keyStr = melody.key ?? analysis?.key ?? "C major";
+            const vexKey = toVexFlowKey(keyStr);
+            const timeSig = melody.timeSignature ?? analysis?.timeSignature ?? "4/4";
+            stave.addClef("treble");
+            if (vexKey !== "C") stave.addKeySignature(vexKey);
+            stave.addTimeSignature(timeSig);
+          }
+
+          stave.setBegBarType(lineBarIndex === 0 ? Barline.type.SINGLE : Barline.type.NONE);
+          stave.setEndBarType(measureIndex === measures.length - 1 ? Barline.type.END : Barline.type.SINGLE);
+          stave.setContext(context).draw();
+
+          const staveNotes = measure.notes.map((note, noteIndex) => {
+            const duration = normalizeDuration(note.duration);
+            const isRest = duration.endsWith("r");
+            // 쉼표는 b/4 위치 사용, 일반 음표는 원래 키 사용
+            const keys = isRest ? ["b/4"] : (note.keys?.length ? note.keys : ["c/4"]);
+
+            const staveNote = new StaveNote({
+              clef: "treble",
+              keys: keys.map(normalizeVexKey),
+              duration
+            });
+
+            // 첫 번째 음표에만 코드 표시 (쉼표 제외)
+            if (noteIndex === 0 && !isRest) {
+              staveNote.addModifier(
+                new Annotation(measure.chord)
+                  .setFont("Arial", 13, "bold")
+                  .setVerticalJustification(Annotation.VerticalJustify.TOP),
+                0
+              );
+            }
+
+            return staveNote;
+          });
+
+          const timeSigStr = melody.timeSignature ?? analysis?.timeSignature ?? "4/4";
+          const [tsBeats, tsValue] = timeSigStr.split("/").map(Number);
+          const voice = new Voice({ num_beats: tsBeats || 4, beat_value: tsValue || 4 }).setStrict(false);
+          voice.addTickables(staveNotes);
+
+          const vexKeyForWidth = toVexFlowKey(melody.key ?? analysis?.key ?? "C major");
+          const hasKeySig = vexKeyForWidth !== "C";
+          const formatWidth = lineBarIndex === 0 ? measureWidth - (hasKeySig ? 98 : 78) : measureWidth - 28;
+          new Formatter().joinVoices([voice]).format([voice], formatWidth);
+          voice.draw(context, stave);
+        });
+
+        const svg = container.querySelector("svg");
+        if (svg) {
+          addLeadSheetDecorations(svg, {
+            title: melody.title ?? analysis?.title ?? "Untitled",
+            composer: melody.composer ?? analysis?.composer ?? "",
+            totalBars, barsPerLine, measureWidth, left, scoreTop, lineHeight, sections
+          });
+        }
+      } catch (error) {
+        console.error("[VexFlowScore] Failed to render melody", error);
+        setRenderError(error instanceof Error ? error.message : "Failed to render melody.");
+      }
+    }
+
+    renderScore();
+    return () => { cancelled = true; };
+  }, [analysis, melody]);
+
+  return (
+    <section className="rounded-md border border-zinc-300 bg-white p-3">
+      {renderError ? (
+        <div className="flex min-h-[220px] flex-col items-center justify-center gap-2 text-center">
+          <AlertCircle className="h-8 w-8 text-red-500" aria-hidden />
+          <p className="font-bold text-zinc-950">Notation render failed</p>
+          <p className="max-w-md text-sm text-zinc-600">{renderError}</p>
+        </div>
+      ) : null}
+      <div ref={containerRef} className="min-h-[240px] w-full overflow-x-auto" />
+    </section>
+  );
+}
+
+// 키 문자열 → VexFlow 조표 형식 변환
+// 예: "G major" → "G", "Bb major" → "Bb", "D minor" → "Dm"
+function toVexFlowKey(keyStr: string): string {
+  const lower = keyStr.toLowerCase();
+  const isMinor = lower.includes("minor") || lower.includes("min") || lower.endsWith("m");
+  const rootMatch = keyStr.match(/^([A-G][b#]?)/);
+  if (!rootMatch) return "C";
+  const root = rootMatch[1];
+  return isMinor ? root + "m" : root;
+}
+
+function normalizeVexKey(key: string) {
+  return key.trim().toLowerCase().replace(/\s+/g, "");
+}
+
+// ✅ 수정 2: 쉼표 duration 허용
+function normalizeDuration(duration: string) {
+  if (["8", "q", "h", "w", "8r", "qr", "hr", "wr"].includes(duration)) return duration;
+  return "q";
+}
+
+function splitIntoMeasures(
+  notes: MelodyNote[],
+  { chordProgression, barChords, totalBars }: {
+    chordProgression?: string[]; barChords?: BarChord[]; totalBars: number;
+  }
+) {
+  const measures: Array<{ chord: string; notes: MelodyNote[] }> = [];
+  let currentNotes: MelodyNote[] = [];
+  let currentBeats = 0;
+
+  notes.forEach((note) => {
+    const noteBeats = getDurationBeats(note.duration);
+
+    if (currentBeats + noteBeats > 4 && currentNotes.length > 0) {
+      measures.push({
+        chord: getMeasureChord(measures.length, currentNotes, chordProgression, barChords),
+        notes: currentNotes
+      });
+      currentNotes = [];
+      currentBeats = 0;
+    }
+
+    currentNotes.push(note);
+    currentBeats += noteBeats;
+
+    if (currentBeats >= 4) {
+      measures.push({
+        chord: getMeasureChord(measures.length, currentNotes, chordProgression, barChords),
+        notes: currentNotes
+      });
+      currentNotes = [];
+      currentBeats = 0;
+    }
+  });
+
+  if (currentNotes.length > 0) {
+    measures.push({
+      chord: getMeasureChord(measures.length, currentNotes, chordProgression, barChords),
+      notes: currentNotes
+    });
   }
 
-  // 같은 코드가 반복될 때 다양성 확보: 바 인덱스 + 코드 해시 조합
-  const chordHash = chord.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-  const idx = (barIndex * 3 + chordHash) % patterns.length;
-  return patterns[idx];
-}
-
-// ============================================================
-// API Route
-// ============================================================
-export async function POST(request: Request) {
-  try {
-    const body = await request.json();
-    const title = String(body.title ?? "Untitled").trim();
-    const composer = String(body.composer ?? "Unknown").trim();
-    const key = String(body.key ?? "C major").trim();
-    const tempo = String(body.tempo ?? "Medium Swing").trim();
-    const style = String(body.style ?? "jazz").trim();
-    const timeSignature = String(body.timeSignature ?? "4/4").trim();
-    const totalBars = clamp(body.totalBars, 4, 64, 16);
-    const barsPerLine = clamp(body.barsPerLine, 1, 8, 4);
-    const chordProgression: string[] = Array.isArray(body.chordProgression)
-      ? body.chordProgression : ["Cmaj7","Am7","Dm7","G7"];
-    const barChords = normalizeBarChords(body.barChords, chordProgression, totalBars);
-    const sections = normalizeSections(body.sections, totalBars);
-    const styleType = detectStyle(style);
-
-    const notes = barChords.flatMap((bc, i) =>
-      buildBarNotes(bc.chord, i, styleType, timeSignature)
-    );
-
-    const result: MelodyResponse = {
-      title, composer, key, tempo, timeSignature,
-      totalBars, barsPerLine,
-      chordProgression: barChords.map(b => b.chord),
-      barChords, sections, notes
-    };
-
-    return NextResponse.json(result);
-  } catch (error) {
-    return NextResponse.json({ error: "Server error", message: String(error) }, { status: 500 });
+  while (measures.length < totalBars) {
+    measures.push({
+      chord: getMeasureChord(measures.length, [], chordProgression, barChords),
+      notes: fallbackNotes().slice(0, 4)
+    });
   }
+
+  return measures.slice(0, totalBars);
 }
 
-function clamp(v: unknown, min: number, max: number, def: number): number {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return def;
-  return Math.min(max, Math.max(min, Math.round(n)));
-}
-
-function normalizeBarChords(raw: unknown, chords: string[], total: number): BarChord[] {
-  const arr = Array.isArray(raw) ? raw : [];
-  const map = new Map<number, string>(
-    arr.filter((e): e is BarChord => Boolean(e && typeof e.bar === 'number' && typeof e.chord === 'string'))
-       .map((e) => [e.bar, e.chord])
+function getMeasureChord(measureIndex: number, notes: MelodyNote[], chordProgression?: string[], barChords?: BarChord[]) {
+  return (
+    barChords?.find((entry) => entry.bar === measureIndex + 1)?.chord ??
+    chordProgression?.[measureIndex] ??
+    notes.find((note) => note.chord)?.chord ??
+    "Cmaj7"
   );
-  return Array.from({ length: total }, (_, i) => ({
-    bar: i + 1,
-    chord: map.get(i + 1) ?? chords[i % Math.max(1, chords.length)] ?? "Cmaj7"
-  }));
 }
 
-function normalizeSections(raw: unknown, total: number): ScoreSection[] {
-  const arr = Array.isArray(raw) ? raw : [];
-  const valid = arr.filter((s): s is ScoreSection =>
-    Boolean(s && typeof s.label === 'string' && typeof s.startBar === 'number')
+// ✅ 수정 3: 쉼표 박자 처리
+function getDurationBeats(duration: string) {
+  if (duration === "w" || duration === "wr") return 4;
+  if (duration === "h" || duration === "hr") return 2;
+  if (duration === "8" || duration === "8r") return 0.5;
+  return 1; // q, qr
+}
+
+function fallbackNotes(): MelodyNote[] {
+  return [
+    { keys: ["c/4"], duration: "q", chord: "Cmaj7" },
+    { keys: ["e/4"], duration: "q", chord: "Cmaj7" },
+    { keys: ["g/4"], duration: "q", chord: "Cmaj7" },
+    { keys: ["b/4"], duration: "q", chord: "Cmaj7" },
+    { keys: ["a/4"], duration: "q", chord: "E7" },
+    { keys: ["g/4"], duration: "q", chord: "E7" },
+    { keys: ["e/4"], duration: "q", chord: "E7" },
+    { keys: ["d/4"], duration: "q", chord: "E7" },
+    { keys: ["f/4"], duration: "q", chord: "A7" },
+    { keys: ["a/4"], duration: "q", chord: "A7" },
+    { keys: ["c/5"], duration: "q", chord: "A7" },
+    { keys: ["a/4"], duration: "q", chord: "A7" },
+    { keys: ["d/4"], duration: "q", chord: "Dm7" },
+    { keys: ["f/4"], duration: "q", chord: "Dm7" },
+    { keys: ["a/4"], duration: "q", chord: "Dm7" },
+    { keys: ["c/5"], duration: "q", chord: "Dm7" }
+  ];
+}
+
+function clampLayoutNumber(value: number | undefined, min: number, max: number, fallback: number) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value as number)));
+}
+
+function addLeadSheetDecorations(svg: SVGSVGElement, {
+  title, composer, totalBars, barsPerLine, measureWidth, left, scoreTop, lineHeight, sections
+}: {
+  title: string; composer: string; totalBars: number; barsPerLine: number;
+  measureWidth: number; left: number; scoreTop: number; lineHeight: number; sections: ScoreSection[];
+}) {
+  const ns = "http://www.w3.org/2000/svg";
+  const width = Number(svg.getAttribute("width")) || 760;
+
+  const titleText = document.createElementNS(ns, "text");
+  titleText.setAttribute("x", String(width / 2));
+  titleText.setAttribute("y", "38");
+  titleText.setAttribute("text-anchor", "middle");
+  titleText.setAttribute("font-family", "Arial, sans-serif");
+  titleText.setAttribute("font-size", "24");
+  titleText.setAttribute("font-weight", "700");
+  titleText.textContent = title;
+  svg.appendChild(titleText);
+
+  const bylineText = document.createElementNS(ns, "text");
+  bylineText.setAttribute("x", String(width - 28));
+  bylineText.setAttribute("y", "66");
+  bylineText.setAttribute("text-anchor", "end");
+  bylineText.setAttribute("font-family", "Arial, sans-serif");
+  bylineText.setAttribute("font-size", "12");
+  bylineText.setAttribute("font-weight", "600");
+  bylineText.textContent = composer ? `${composer} / Adlib by AI` : "Adlib by AI";
+  svg.appendChild(bylineText);
+
+  sections.forEach((section) => {
+    const barIndex = Math.min(totalBars - 1, Math.max(0, section.startBar - 1));
+    const lineIndex = Math.floor(barIndex / barsPerLine);
+    const lineBarIndex = barIndex % barsPerLine;
+    const x = left + lineBarIndex * measureWidth + 2;
+    const y = scoreTop + lineIndex * lineHeight - 30;
+
+    const rect = document.createElementNS(ns, "rect");
+    rect.setAttribute("x", String(x));
+    rect.setAttribute("y", String(y));
+    rect.setAttribute("width", "24");
+    rect.setAttribute("height", "20");
+    rect.setAttribute("fill", "white");
+    rect.setAttribute("stroke", "black");
+    rect.setAttribute("stroke-width", "1.5");
+    svg.appendChild(rect);
+
+    const label = document.createElementNS(ns, "text");
+    label.setAttribute("x", String(x + 12));
+    label.setAttribute("y", String(y + 15));
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("font-family", "Arial, sans-serif");
+    label.setAttribute("font-size", "13");
+    label.setAttribute("font-weight", "700");
+    label.textContent = section.label;
+    svg.appendChild(label);
+  });
+}
+
+function AnalysisResultView({ analysis, raw }: { analysis: AnalysisResult; raw: AnalysisResult }) {
+  const chords = analysis.chordProgression?.length ? analysis.chordProgression : ["unknown"];
+
+  return (
+    <div className="flex h-full min-h-[420px] flex-col gap-4 overflow-auto bg-[#fbfbf3] p-4 text-zinc-950">
+      <div className="flex items-start justify-between gap-3 border-b border-zinc-300 pb-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-fern">Claude Result</p>
+          <h3 className="text-2xl font-black tracking-normal">Score Analysis</h3>
+        </div>
+        <Sparkles className="h-6 w-6 text-fern" aria-hidden />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <ResultMetric label="Key" value={analysis.key ?? "unknown"} confidence={analysis.confidence?.key} />
+        <ResultMetric label="Tempo" value={analysis.tempo ?? "unknown"} confidence={analysis.confidence?.tempo} />
+      </div>
+
+      <section className="rounded-md border border-zinc-300 bg-white p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h4 className="text-sm font-black uppercase tracking-[0.16em] text-zinc-600">Chord progression</h4>
+          <span className="text-xs font-bold text-fern">{formatConfidence(analysis.confidence?.chordProgression)}</span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {chords.map((chord, index) => (
+            <span key={`${chord}-${index}`} className="rounded-md bg-zinc-950 px-3 py-2 text-sm font-bold text-white">
+              {chord}
+            </span>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-md border border-zinc-300 bg-zinc-950 p-4 text-zinc-100">
+        <h4 className="mb-3 text-sm font-bold uppercase tracking-[0.16em] text-moss">Raw JSON</h4>
+        <pre className="max-h-56 overflow-auto whitespace-pre-wrap text-xs leading-5 text-zinc-300">
+          {JSON.stringify(raw, null, 2)}
+        </pre>
+      </section>
+    </div>
   );
-  if (!valid.length) return [{ label: "A", startBar: 1, endBar: total }];
-  return valid.map(s => ({
-    label: s.label,
-    startBar: Math.min(total, Math.max(1, Math.round(s.startBar))),
-    endBar: s.endBar ? Math.min(total, Math.max(1, Math.round(s.endBar))) : undefined
-  }));
 }
 
-export {};
+function ResultMetric({ label, value, confidence }: { label: string; value: string; confidence?: number }) {
+  return (
+    <div className="rounded-md border border-zinc-300 bg-white p-4">
+      <p className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">{label}</p>
+      <p className="mt-2 text-2xl font-black text-zinc-950">{value}</p>
+      <p className="mt-2 text-xs font-bold text-fern">{formatConfidence(confidence)}</p>
+    </div>
+  );
+}
+
+function formatConfidence(confidence?: number) {
+  if (typeof confidence !== "number") return "confidence unknown";
+  return `${Math.round(confidence * 100)}% confidence`;
+}
+
+function AdlibPreview({ hasGenerated }: { hasGenerated: boolean }) {
+  return (
+    <div className="flex h-full min-h-[420px] flex-col bg-[#fbfbf3] p-4 text-zinc-950">
+      <div className="mb-4 flex items-start justify-between gap-3 border-b border-zinc-300 pb-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-fern">Waiting for analysis</p>
+          <h3 className="text-2xl font-black tracking-normal">Solo Sketch No. 01</h3>
+        </div>
+        <Sparkles className="h-6 w-6 text-fern" aria-hidden />
+      </div>
+
+      <div className="grid flex-1 content-start gap-4">
+        {[0, 1, 2, 3].map((staff) => (
+          <div key={staff} className="relative h-20">
+            <div className="absolute inset-x-0 top-2 grid gap-2">
+              {[0, 1, 2, 3, 4].map((line) => (
+                <span key={line} className="h-px w-full bg-zinc-900" />
+              ))}
+            </div>
+            <div className="absolute left-16 right-0 top-4 grid grid-cols-4 gap-3">
+              {sampleBars.slice(staff * 2, staff * 2 + 4).map((bar, index) => (
+                <div key={`${bar}-${index}`} className="relative h-12 border-l border-zinc-800 pl-2">
+                  <span className="absolute -top-4 left-2 text-[11px] font-bold text-fern">{bar}</span>
+                  <span className={`absolute h-3 w-3 rounded-full bg-zinc-950 ${index % 2 === 0 ? "top-3" : "top-7"}`} />
+                  <span className={`absolute left-8 h-3 w-3 rounded-full bg-zinc-950 ${index % 3 === 0 ? "top-1" : "top-5"}`} />
+                  <span className="absolute left-12 top-2 h-8 w-px bg-zinc-950" />
+                  <span className="absolute left-20 top-6 h-3 w-3 rounded-full bg-zinc-950" />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4 flex items-center justify-between border-t border-zinc-300 pt-3 text-xs font-semibold text-zinc-600">
+        <span>{hasGenerated ? "Analysis complete" : "Press Generate to analyze the score"}</span>
+        <span>BPM 92 - Swing</span>
+      </div>
+    </div>
+  );
+}
