@@ -7,7 +7,7 @@ type ScoreSection = { label: string; startBar: number; endBar?: number; };
 type NoteEntry = { keys: string[]; duration: "8" | "q" | "h" | "w" | "8r" | "qr" | "hr"; chord: string; };
 type MelodyResponse = {
   title: string; composer: string; key: string; tempo: string;
-  timeSignature: "4/4"; totalBars: number; barsPerLine: number;
+  timeSignature: string; totalBars: number; barsPerLine: number;
   chordProgression: string[]; barChords: BarChord[]; sections: ScoreSection[];
   notes: NoteEntry[]; fallback?: boolean;
 };
@@ -22,12 +22,12 @@ const NOTE_TO_SEMI: Record<string, number> = {
 const SEMI_TO_NOTE = ['c','db','d','eb','e','f','gb','g','ab','a','bb','b'];
 
 const QUALITY_INTERVALS: Record<string, number[]> = {
-  'maj7':[0,4,7,11], 'maj9':[0,4,7,11,14], 'maj':[0,4,7], '6':[0,4,7,9],
-  'm7':[0,3,7,10], 'm9':[0,3,7,10,14], 'm':[0,3,7], 'm6':[0,3,7,9],
-  '7':[0,4,7,10], '9':[0,4,7,10,14], '7b9':[0,4,7,10,13],
-  '7#9':[0,4,7,10,15], '7b5':[0,4,6,10], '7#5':[0,4,8,10],
-  'm7b5':[0,3,6,10], 'dim7':[0,3,6,9], 'dim':[0,3,6],
-  'aug':[0,4,8], 'sus4':[0,5,7,10], 'sus2':[0,2,7,10],
+  'maj7':[0,4,7,11],'maj9':[0,4,7,11,14],'maj':[0,4,7],'6':[0,4,7,9],
+  'm7':[0,3,7,10],'m9':[0,3,7,10,14],'m':[0,3,7],'m6':[0,3,7,9],
+  '7':[0,4,7,10],'9':[0,4,7,10,14],'7b9':[0,4,7,10,13],
+  '7#9':[0,4,7,10,15],'7b5':[0,4,6,10],'7#5':[0,4,8,10],
+  'm7b5':[0,3,6,10],'dim7':[0,3,6,9],'dim':[0,3,6],
+  'aug':[0,4,8],'sus4':[0,5,7,10],'sus2':[0,2,7,10],
 };
 const PASSING_INTERVALS: Record<string, number[]> = {
   'maj7':[2,9],'maj9':[2,9],'maj':[2,9],'6':[2,9],
@@ -42,13 +42,15 @@ function parseRoot(chord: string): { root: string; rest: string } {
 }
 
 function parseQuality(rest: string): string {
-  const r = rest.trim().replace(/△|Δ/g,'maj').replace(/ø/g,'m7b5').replace(/°/g,'dim').replace(/\+/g,'aug');
+  const r = rest.trim()
+    .replace(/△|Δ/g,'maj').replace(/ø/g,'m7b5')
+    .replace(/°/g,'dim').replace(/\+/g,'aug');
   const checks: [RegExp, string][] = [
-    [/m7b5|m7\(b5\)|-7b5|ø/,'m7b5'],
+    [/m7b5|m7\(b5\)|-7b5/,'m7b5'],
     [/maj9|M9/,'maj9'],[/maj7|M7/,'maj7'],[/maj|M(?=[^a-z]|$)/,'maj'],
     [/m9|-9|min9/,'m9'],[/m7|-7|min7/,'m7'],[/m6|-6|min6/,'m6'],
     [/dim7|o7|07/,'dim7'],[/dim|o(?=[^a-z]|$)/,'dim'],
-    [/m|-(?=[^0-9]|$)|min(?!7)/,'m'],
+    [/m(?=[^a])|(?:^|(?<=[0-9]))[-]|min(?!7)/,'m'],
     [/aug/,'aug'],[/7b9/,'7b9'],[/7#9/,'7#9'],[/7b5|\(b5\)/,'7b5'],[/7#5/,'7#5'],
     [/sus4/,'sus4'],[/sus2/,'sus2'],
     [/^9/,'9'],[/^7/,'7'],[/^6/,'6'],[/^$/,'maj'],
@@ -66,15 +68,10 @@ function buildChordPalette(chord: string): { ct: string[]; ps: string[] } {
 
   const toKey = (i: number) => {
     const total = rootSemi + i;
-    const note = SEMI_TO_NOTE[total % 12];
-    const oct = total >= 12 ? 5 : 4;
-    return `${note}/${Math.min(5, Math.max(4, oct))}`;
+    return `${SEMI_TO_NOTE[total % 12]}/${total >= 12 ? 5 : 4}`;
   };
 
-  return {
-    ct: intervals.slice(0, 4).map(toKey),
-    ps: passingInts.map(toKey),
-  };
+  return { ct: intervals.slice(0, 4).map(toKey), ps: passingInts.map(toKey) };
 }
 
 // ============================================================
@@ -92,9 +89,24 @@ function detectStyle(style: string): StyleType {
 }
 
 // ============================================================
-// 🎼 스타일+코드 기반 음표 생성 (결정론적, 항상 정확)
+// 🎼 박자별 음표 길이 정의
 // ============================================================
-function buildBarNotes(chord: string, barIndex: number, styleType: StyleType): NoteEntry[] {
+function getTimeSigBeats(timeSig: string): { beats: number; value: number } {
+  const m = timeSig.match(/^(\d+)\/(\d+)$/);
+  if (!m) return { beats: 4, value: 4 };
+  return { beats: parseInt(m[1]), value: parseInt(m[2]) };
+}
+
+// 박자에 맞는 총 비트 수 (8분음표 기준)
+function getBarBeatsIn8th(timeSig: string): number {
+  const { beats, value } = getTimeSigBeats(timeSig);
+  return beats * (8 / value); // 8분음표 단위
+}
+
+// ============================================================
+// 🎵 코드+스타일+박자 기반 음표 생성
+// ============================================================
+function buildBarNotes(chord: string, barIndex: number, styleType: StyleType, timeSig: string): NoteEntry[] {
   const { ct, ps } = buildChordPalette(chord);
   const c0 = ct[0] ?? 'c/4';
   const c1 = ct[1] ?? ct[0] ?? 'e/4';
@@ -106,27 +118,42 @@ function buildBarNotes(chord: string, barIndex: number, styleType: StyleType): N
   const R = (d: "qr"|"hr"|"8r"): NoteEntry => ({ keys:["b/4"], duration:d, chord });
   const N = (k: string, d: "8"|"q"|"h"): NoteEntry => ({ keys:[k], duration:d, chord });
 
-  // 마일스 데이비스: 매우 sparse, 쉼표 많음
-  const miles: NoteEntry[][] = [
-    [N(c1,"h"), R("hr")],
-    [R("qr"), N(c0,"h"), R("qr")],
-    [N(c2,"h"), R("qr"), N(c0,"q")],
-    [R("hr"), N(c1,"q"), N(c0,"q")],
-    [N(c0,"q"), R("hr"), N(c2,"q")],
-    [R("qr"), N(c2,"h"), R("qr")],
-    [N(c1,"h"), R("qr"), N(c2,"q")],
-    [R("hr"), N(c0,"h")],
-    [N(c3,"h"), R("hr")],
-    [R("qr"), N(c1,"h"), R("qr")],
-    [N(c0,"q"), R("qr"), N(c1,"h")],
-    [R("hr"), N(c2,"h")],
-    [N(c2,"q"), R("hr"), N(c0,"q")],
-    [R("qr"), N(c3,"h"), R("qr")],
-    [N(c1,"q"), N(c0,"h"), R("qr")],
-    [R("hr"), N(c1,"q"), N(c2,"q")],
+  // 6/8박자용 패턴 (6개 8분음표 = 2그룹 × 3)
+  const patterns68: NoteEntry[][] = [
+    [N(c0,"8"),N(p0,"8"),N(c1,"8"),N(c2,"8"),N(p1,"8"),N(c1,"8")],
+    [N(c1,"q"),N(c0,"8"),N(c2,"q"),N(c1,"8")],
+    [N(c0,"8"),N(c1,"8"),N(c2,"8"),R("8r"),N(c1,"8"),N(c0,"8")],
+    [N(c2,"q"),N(p0,"8"),N(c1,"q"),N(c0,"8")],
+    [R("8r"),N(c0,"8"),N(c1,"8"),N(c2,"q"),N(c1,"8")],
+    [N(c1,"8"),N(c2,"8"),N(c1,"8"),N(c0,"q"),N(p0,"8")],
+    [N(c0,"q"),N(c1,"8"),R("8r"),N(c2,"8"),N(c1,"8")],
+    [N(c2,"8"),N(c1,"8"),N(c0,"8"),N(p0,"8"),N(c1,"8"),N(c2,"8")],
   ];
 
-  // 비밥: 8분음표 빽빽, 코드톤+패싱노트
+  // 3/4박자용 패턴 (3박)
+  const patterns34: NoteEntry[][] = [
+    [N(c0,"q"), N(c1,"q"), N(c2,"q")],
+    [N(c1,"h"), N(c0,"q")],
+    [R("qr"), N(c1,"q"), N(c2,"q")],
+    [N(c2,"q"), N(c1,"h")],
+    [N(c0,"8"),N(p0,"8"),N(c1,"q"),N(c2,"q")],
+    [N(c1,"q"), R("qr"), N(c0,"q")],
+    [N(c2,"q"), N(c0,"q"), N(c1,"q")],
+    [R("qr"), N(c2,"h")],
+  ];
+
+  // 4/4박자 스타일별 패턴
+  const miles: NoteEntry[][] = [
+    [N(c1,"h"),R("hr")],[R("qr"),N(c0,"h"),R("qr")],
+    [N(c2,"h"),R("qr"),N(c0,"q")],[R("hr"),N(c1,"q"),N(c0,"q")],
+    [N(c0,"q"),R("hr"),N(c2,"q")],[R("qr"),N(c2,"h"),R("qr")],
+    [N(c1,"h"),R("qr"),N(c2,"q")],[R("hr"),N(c0,"h")],
+    [N(c3,"h"),R("hr")],[R("qr"),N(c1,"h"),R("qr")],
+    [N(c0,"q"),R("qr"),N(c1,"h")],[R("hr"),N(c2,"h")],
+    [N(c2,"q"),R("hr"),N(c0,"q")],[R("qr"),N(c3,"h"),R("qr")],
+    [N(c1,"q"),N(c0,"h"),R("qr")],[R("hr"),N(c1,"q"),N(c2,"q")],
+  ];
+
   const bebop: NoteEntry[][] = [
     [N(c0,"8"),N(p0,"8"),N(c1,"8"),N(p1,"8"),N(c2,"8"),N(p0,"8"),N(c1,"8"),N(c0,"8")],
     [N(c1,"8"),N(c2,"8"),N(p0,"8"),N(c3,"8"),N(c2,"8"),N(c1,"8"),N(p1,"8"),N(c0,"8")],
@@ -146,27 +173,17 @@ function buildBarNotes(chord: string, barIndex: number, styleType: StyleType): N
     [N(c1,"8"),N(c2,"8"),N(c3,"8"),N(p0,"8"),N(c2,"8"),N(c1,"8"),N(c0,"q")],
   ];
 
-  // 발라드: 롱톤, 매우 느리고 서정적
   const ballad: NoteEntry[][] = [
-    [N(c1,"h"), N(c0,"h")],
-    [N(c2,"h"), R("hr")],
-    [R("qr"), N(c0,"h"), R("qr")],
-    [N(c1,"h"), R("qr"), N(c2,"q")],
-    [N(c0,"q"), N(c1,"h"), R("qr")],
-    [R("hr"), N(c2,"h")],
-    [N(c3,"h"), R("qr"), N(c0,"q")],
-    [N(c0,"h"), N(c2,"h")],
-    [R("qr"), N(c1,"h"), N(c0,"q")],
-    [N(c2,"h"), N(c1,"h")],
-    [N(c0,"h"), R("qr"), N(c3,"q")],
-    [R("hr"), N(c1,"h")],
-    [N(c1,"q"), N(c2,"h"), R("qr")],
-    [N(c3,"h"), N(c1,"h")],
-    [R("qr"), N(c2,"h"), N(c0,"q")],
-    [N(c0,"h"), R("hr")],
+    [N(c1,"h"),N(c0,"h")],[N(c2,"h"),R("hr")],
+    [R("qr"),N(c0,"h"),R("qr")],[N(c1,"h"),R("qr"),N(c2,"q")],
+    [N(c0,"q"),N(c1,"h"),R("qr")],[R("hr"),N(c2,"h")],
+    [N(c3,"h"),R("qr"),N(c0,"q")],[N(c0,"h"),N(c2,"h")],
+    [R("qr"),N(c1,"h"),N(c0,"q")],[N(c2,"h"),N(c1,"h")],
+    [N(c0,"h"),R("qr"),N(c3,"q")],[R("hr"),N(c1,"h")],
+    [N(c1,"q"),N(c2,"h"),R("qr")],[N(c3,"h"),N(c1,"h")],
+    [R("qr"),N(c2,"h"),N(c0,"q")],[N(c0,"h"),R("hr")],
   ];
 
-  // 가스펠: 소울풀, 2,4박 강조
   const gospel: NoteEntry[][] = [
     [N(c0,"q"),N(c1,"8"),N(c2,"8"),N(c1,"q"),N(c0,"q")],
     [R("qr"),N(c1,"q"),N(c2,"8"),N(c1,"8"),N(c0,"q")],
@@ -186,7 +203,6 @@ function buildBarNotes(chord: string, barIndex: number, styleType: StyleType): N
     [R("qr"),N(c2,"q"),N(c0,"8"),N(c1,"8"),R("qr")],
   ];
 
-  // 재즈: 다양한 리듬 믹스
   const jazz: NoteEntry[][] = [
     [N(c0,"q"),N(p0,"8"),N(c1,"8"),N(c2,"h")],
     [R("qr"),N(c1,"q"),N(c2,"8"),N(p0,"8"),N(c0,"q")],
@@ -206,8 +222,22 @@ function buildBarNotes(chord: string, barIndex: number, styleType: StyleType): N
     [R("hr"),N(c1,"q"),N(c0,"q")],
   ];
 
-  const patterns = { miles, bebop, ballad, gospel, jazz }[styleType];
-  return patterns[barIndex % patterns.length];
+  // 박자에 따라 패턴 선택
+  const sig = timeSig.trim();
+  let patterns: NoteEntry[][];
+  if (sig === "6/8") {
+    patterns = patterns68;
+  } else if (sig === "3/4") {
+    patterns = patterns34;
+  } else {
+    const map = { miles, bebop, ballad, gospel, jazz };
+    patterns = map[styleType];
+  }
+
+  // 같은 코드가 반복될 때 다양성 확보: 바 인덱스 + 코드 해시 조합
+  const chordHash = chord.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+  const idx = (barIndex * 3 + chordHash) % patterns.length;
+  return patterns[idx];
 }
 
 // ============================================================
@@ -221,19 +251,21 @@ export async function POST(request: Request) {
     const key = String(body.key ?? "C major").trim();
     const tempo = String(body.tempo ?? "Medium Swing").trim();
     const style = String(body.style ?? "jazz").trim();
+    const timeSignature = String(body.timeSignature ?? "4/4").trim();
     const totalBars = clamp(body.totalBars, 4, 64, 16);
     const barsPerLine = clamp(body.barsPerLine, 1, 8, 4);
-    const chordProgression: string[] = Array.isArray(body.chordProgression) ? body.chordProgression : ["Cmaj7","Am7","Dm7","G7"];
+    const chordProgression: string[] = Array.isArray(body.chordProgression)
+      ? body.chordProgression : ["Cmaj7","Am7","Dm7","G7"];
     const barChords = normalizeBarChords(body.barChords, chordProgression, totalBars);
     const sections = normalizeSections(body.sections, totalBars);
     const styleType = detectStyle(style);
 
-    // 코드+스타일 기반으로 음표 직접 생성 (항상 정확)
-    const notes = barChords.flatMap((bc, i) => buildBarNotes(bc.chord, i, styleType));
+    const notes = barChords.flatMap((bc, i) =>
+      buildBarNotes(bc.chord, i, styleType, timeSignature)
+    );
 
     const result: MelodyResponse = {
-      title, composer, key, tempo,
-      timeSignature: "4/4",
+      title, composer, key, tempo, timeSignature,
       totalBars, barsPerLine,
       chordProgression: barChords.map(b => b.chord),
       barChords, sections, notes
@@ -254,7 +286,7 @@ function clamp(v: unknown, min: number, max: number, def: number): number {
 function normalizeBarChords(raw: unknown, chords: string[], total: number): BarChord[] {
   const arr = Array.isArray(raw) ? raw : [];
   const map = new Map<number, string>(
-    arr.filter((e): e is BarChord => e && typeof e.bar === 'number' && typeof e.chord === 'string')
+    arr.filter((e): e is BarChord => Boolean(e && typeof e.bar === 'number' && typeof e.chord === 'string'))
        .map((e) => [e.bar, e.chord])
   );
   return Array.from({ length: total }, (_, i) => ({
@@ -265,7 +297,9 @@ function normalizeBarChords(raw: unknown, chords: string[], total: number): BarC
 
 function normalizeSections(raw: unknown, total: number): ScoreSection[] {
   const arr = Array.isArray(raw) ? raw : [];
-  const valid = arr.filter((s): s is ScoreSection => s && typeof s.label === 'string' && typeof s.startBar === 'number');
+  const valid = arr.filter((s): s is ScoreSection =>
+    Boolean(s && typeof s.label === 'string' && typeof s.startBar === 'number')
+  );
   if (!valid.length) return [{ label: "A", startBar: 1, endBar: total }];
   return valid.map(s => ({
     label: s.label,
