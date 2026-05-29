@@ -435,7 +435,12 @@ function VexFlowScore({ melody, analysis }: { melody: MelodyResult; analysis: An
           const stave = new Stave(x, y, measureWidth);
 
           if (lineBarIndex === 0) {
-            stave.addClef("treble").addTimeSignature(melody.timeSignature ?? analysis?.timeSignature ?? "4/4");
+            const keyStr = melody.key ?? analysis?.key ?? "C major";
+            const vexKey = toVexFlowKey(keyStr);
+            const timeSig = melody.timeSignature ?? analysis?.timeSignature ?? "4/4";
+            stave.addClef("treble");
+            if (vexKey !== "C") stave.addKeySignature(vexKey);
+            stave.addTimeSignature(timeSig);
           }
 
           stave.setBegBarType(lineBarIndex === 0 ? Barline.type.SINGLE : Barline.type.NONE);
@@ -467,10 +472,14 @@ function VexFlowScore({ melody, analysis }: { melody: MelodyResult; analysis: An
             return staveNote;
           });
 
-          const voice = new Voice({ num_beats: 4, beat_value: 4 }).setStrict(false);
+          const timeSigStr = melody.timeSignature ?? analysis?.timeSignature ?? "4/4";
+          const [tsBeats, tsValue] = timeSigStr.split("/").map(Number);
+          const voice = new Voice({ num_beats: tsBeats || 4, beat_value: tsValue || 4 }).setStrict(false);
           voice.addTickables(staveNotes);
 
-          const formatWidth = lineBarIndex === 0 ? measureWidth - 78 : measureWidth - 28;
+          const vexKeyForWidth = toVexFlowKey(melody.key ?? analysis?.key ?? "C major");
+          const hasKeySig = vexKeyForWidth !== "C";
+          const formatWidth = lineBarIndex === 0 ? measureWidth - (hasKeySig ? 98 : 78) : measureWidth - 28;
           new Formatter().joinVoices([voice]).format([voice], formatWidth);
           voice.draw(context, stave);
         });
@@ -505,6 +514,17 @@ function VexFlowScore({ melody, analysis }: { melody: MelodyResult; analysis: An
       <div ref={containerRef} className="min-h-[240px] w-full overflow-x-auto" />
     </section>
   );
+}
+
+// 키 문자열 → VexFlow 조표 형식 변환
+// 예: "G major" → "G", "Bb major" → "Bb", "D minor" → "Dm"
+function toVexFlowKey(keyStr: string): string {
+  const lower = keyStr.toLowerCase();
+  const isMinor = lower.includes("minor") || lower.includes("min") || lower.endsWith("m");
+  const rootMatch = keyStr.match(/^([A-G][b#]?)/);
+  if (!rootMatch) return "C";
+  const root = rootMatch[1];
+  return isMinor ? root + "m" : root;
 }
 
 function normalizeVexKey(key: string) {
